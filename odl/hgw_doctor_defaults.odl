@@ -1,0 +1,88 @@
+/**
+ * hgw_doctor_defaults.odl
+ *
+ * Populate section: sets default runtime values and creates the built-in
+ * monitoring profiles. This file is included by hgw_doctor.odl.
+ *
+ * Operators/supervisors can override values here without touching the main
+ * data model definition. The ACS can also write these at runtime.
+ *
+ * Note: %populate writes are transient unless odl-save-on-stop = true in
+ *       %config, in which case the runtime state is persisted to
+ *       /etc/amx/hgw_doctor/ on daemon exit.
+ */
+
+%populate {
+
+    object X_TELNET_HGWDoctor {
+
+        /* Global defaults */
+        parameter Enable          = true;
+        parameter Profile         = "default";
+        parameter CPUThreshold    = 90;
+        parameter MemThreshold    = 90;
+        parameter ThresholdDuration = 60;
+        parameter PollInterval    = 5;
+        parameter ActionType      = "ProcessRestart";
+        parameter ProcessName     = "";
+        parameter UploadURL       = "https://diagnostics.telnet.tn/upload";
+
+        /* ---------------------------------------------------------------
+         * Built-in profile: "default"
+         * Balanced settings suitable for most residential gateways.
+         * --------------------------------------------------------------- */
+        object Profiles {
+            instance add(0, "default") {
+                parameter Name               = "default";
+                parameter CPUThreshold       = 90;
+                parameter MemThreshold       = 90;
+                parameter ThresholdDuration  = 60;
+                parameter ActionType         = "ProcessRestart";
+                parameter PollInterval       = 5;
+                parameter Description        = "Balanced: triggers on sustained 90% CPU or memory for 60s.";
+            }
+
+            /* ---------------------------------------------------------------
+             * Built-in profile: "aggressive"
+             * Low thresholds, short duration - catches problems early.
+             * --------------------------------------------------------------- */
+            instance add(0, "aggressive") {
+                parameter Name               = "aggressive";
+                parameter CPUThreshold       = 70;
+                parameter MemThreshold       = 75;
+                parameter ThresholdDuration  = 30;
+                parameter ActionType         = "ProcessRestart";
+                parameter PollInterval       = 3;
+                parameter Description        = "Aggressive: lower thresholds and faster reaction for high-traffic deployments.";
+            }
+
+            /* ---------------------------------------------------------------
+             * Built-in profile: "conservative"
+             * High thresholds, long duration - avoids false positives.
+             * --------------------------------------------------------------- */
+            instance add(0, "conservative") {
+                parameter Name               = "conservative";
+                parameter CPUThreshold       = 95;
+                parameter MemThreshold       = 95;
+                parameter ThresholdDuration  = 120;
+                parameter ActionType         = "CacheClear";
+                parameter PollInterval       = 10;
+                parameter Description        = "Conservative: only reacts to extreme sustained conditions.";
+            }
+
+            /* ---------------------------------------------------------------
+             * Built-in profile: "reboot-recovery"
+             * Last-resort: reboots the device on critical resource exhaustion.
+             * --------------------------------------------------------------- */
+            instance add(0, "reboot-recovery") {
+                parameter Name               = "reboot-recovery";
+                parameter CPUThreshold       = 98;
+                parameter MemThreshold       = 98;
+                parameter ThresholdDuration  = 180;
+                parameter ActionType         = "Reboot";
+                parameter PollInterval       = 5;
+                parameter Description        = "Reboot-recovery: last resort full device reboot on critical exhaustion.";
+            }
+        }
+    }
+}
