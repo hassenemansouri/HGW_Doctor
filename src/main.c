@@ -1,7 +1,6 @@
 /**
  * @file main.c
  * @brief HGW-Doctor daemon entry point.
- *
  * Responsibilities:
  *  1. Parse command-line arguments.
  *  2. Load configuration (config.c).

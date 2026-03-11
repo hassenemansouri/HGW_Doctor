@@ -10,7 +10,6 @@
  *
  * Included from hgw_doctor.odl via: #include "hgw_doctor_caps.odl";
  */
-
 %config {
 
     /* -----------------------------------------------------------------------

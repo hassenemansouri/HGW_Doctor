@@ -13,9 +13,7 @@
  */
 
 %populate {
-
     object X_TELNET_HGWDoctor {
-
         /* Global defaults */
         parameter Enable          = true;
         parameter Profile         = "default";
