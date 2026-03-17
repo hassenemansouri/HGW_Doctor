@@ -54,16 +54,4 @@
     upload-ca-cert-path  = "/etc/ssl/certs/ca-certificates.crt";
 }
 
-/* -------------------------------------------------------------------------
- * Access-control rules (Ambiorix ACLS)
- * Define which bus roles may read or write HGW-Doctor parameters.
- * ------------------------------------------------------------------------- */
-%define {
-    /* "admin" role: full read + write access (ACS, local CLI) */
-    access {
-        role "admin"    = read_write;
-        role "operator" = read_write;
-        role "monitor"  = read_only;
-        role "guest"    = none;
-    }
-}
+

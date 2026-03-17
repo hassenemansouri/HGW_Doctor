@@ -6,12 +6,9 @@
 #ifndef HGW_CONFIG_H
 #define HGW_CONFIG_H
 
-#include "types.h"
 #include <stdbool.h>
 
-#define HGW_MAX_PATH 256
-#define HGW_MAX_URL  512
-#define HGW_MAX_PROC_NAME 64
+#include "types.h"
 
 /* Main configuration structure (loaded from file) */
 typedef struct {
@@ -24,6 +21,7 @@ typedef struct {
     /* Recovery */
     ActionType action_type;
     char       process_name[HGW_MAX_PROC_NAME];
+    char       scripts_dir[HGW_MAX_PATH];
 
     /* Diagnostics */
     char       diag_output_dir[HGW_MAX_PATH];

@@ -5,10 +5,12 @@
 
 #include <pthread.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "analyzer.h"
 #include "logger.h"
+#include "monitor.h"
 #include "types.h"
 
 /* -------------------------------------------------------------------------
@@ -32,6 +34,10 @@ static struct {
     int      count;
 } s_history;
 
+static int timespec_equal(const struct timespec *lhs, const struct timespec *rhs) {
+    return lhs->tv_sec == rhs->tv_sec && lhs->tv_nsec == rhs->tv_nsec;
+}
+
 /* -------------------------------------------------------------------------
  * History management
  * ------------------------------------------------------------------------- */
@@ -47,7 +53,7 @@ static void history_push(const MetricSnapshot *snap) {
 
 /* Check if a metric has been above threshold for the last N samples */
 static int sustained_threshold(const uint32_t *history, int count,
-                               uint32_t threshold, uint32_t required_samples) {
+                               uint32_t threshold, int required_samples) {
     if (count < required_samples) return 0;
     int start = (s_history.idx - required_samples + HISTORY_MAX) % HISTORY_MAX;
     for (int i = 0; i < required_samples; i++) {
@@ -58,7 +64,7 @@ static int sustained_threshold(const uint32_t *history, int count,
 }
 
 /* Check process dead for required samples */
-static int sustained_dead(const int *history, int count, uint32_t required_samples) {
+static int sustained_dead(const int *history, int count, int required_samples) {
     if (count < required_samples) return 0;
     int start = (s_history.idx - required_samples + HISTORY_MAX) % HISTORY_MAX;
     for (int i = 0; i < required_samples; i++) {
@@ -75,8 +81,15 @@ static void *analyzer_thread(void *arg) {
     (void)arg;
     LOG_INFO("Analyzer thread started");
 
-    uint32_t required_samples = s_cfg.threshold_duration_s / s_cfg.poll_interval_s;
+    int required_samples =
+        (int) ((s_cfg.threshold_duration_s + s_cfg.poll_interval_s - 1) / s_cfg.poll_interval_s);
     if (required_samples < 1) required_samples = 1;
+
+    struct timespec last_seen = {0};
+    int have_last_seen = 0;
+    int cpu_alert_active = 0;
+    int mem_alert_active = 0;
+    int proc_alert_active = 0;
 
     while (!s_stop) {
         /* Wait for new data – simple polling every 100ms */
@@ -85,47 +98,68 @@ static void *analyzer_thread(void *arg) {
         /* Read the latest snapshot from circular buffer (non‑destructive) */
         MetricSnapshot snap;
         if (!monitor_peek_latest(&snap)) continue;  /* buffer empty */
+        if (have_last_seen && timespec_equal(&last_seen, &snap.ts)) continue;
+
+        last_seen = snap.ts;
+        have_last_seen = 1;
 
         history_push(&snap);
 
         /* Check CPU */
         if (snap.cpu_pct >= s_cfg.cpu_threshold_pct) {
-            if (sustained_threshold(s_history.cpu, s_history.count,
-                                     s_cfg.cpu_threshold_pct, required_samples)) {
+            if (!cpu_alert_active &&
+                sustained_threshold(s_history.cpu, s_history.count,
+                                    s_cfg.cpu_threshold_pct, required_samples)) {
                 AnomalyEvent ev = {
                     .type = ANOMALY_CPU,
                     .metric_value = snap.cpu_pct,
                     .duration_s = s_cfg.threshold_duration_s
                 };
-                s_callback(&ev, s_userdata);
+                clock_gettime(CLOCK_REALTIME, &ev.detected_at);
+                if (s_callback) s_callback(&ev, s_userdata);
+                cpu_alert_active = 1;
             }
+        } else {
+            cpu_alert_active = 0;
         }
 
         /* Check memory */
         if (snap.mem_used_pct >= s_cfg.mem_threshold_pct) {
-            if (sustained_threshold(s_history.mem, s_history.count,
-                                     s_cfg.mem_threshold_pct, required_samples)) {
+            if (!mem_alert_active &&
+                sustained_threshold(s_history.mem, s_history.count,
+                                    s_cfg.mem_threshold_pct, required_samples)) {
                 AnomalyEvent ev = {
                     .type = ANOMALY_MEMORY,
                     .metric_value = snap.mem_used_pct,
                     .duration_s = s_cfg.threshold_duration_s
                 };
-                s_callback(&ev, s_userdata);
+                clock_gettime(CLOCK_REALTIME, &ev.detected_at);
+                if (s_callback) s_callback(&ev, s_userdata);
+                mem_alert_active = 1;
             }
+        } else {
+            mem_alert_active = 0;
         }
 
         /* Check process (if monitoring enabled) */
         if (s_cfg.process_name[0] != '\0') {
             if (!snap.proc_alive) {
-                if (sustained_dead(s_history.proc, s_history.count, required_samples)) {
+                if (!proc_alert_active &&
+                    sustained_dead(s_history.proc, s_history.count, required_samples)) {
                     AnomalyEvent ev = {
                         .type = ANOMALY_PROCESS,
                         .metric_value = 0,
                         .duration_s = s_cfg.threshold_duration_s
                     };
-                    s_callback(&ev, s_userdata);
+                    clock_gettime(CLOCK_REALTIME, &ev.detected_at);
+                    if (s_callback) s_callback(&ev, s_userdata);
+                    proc_alert_active = 1;
                 }
+            } else {
+                proc_alert_active = 0;
             }
+        } else {
+            proc_alert_active = 0;
         }
     }
 
@@ -148,6 +182,7 @@ int analyzer_init(MetricCircBuf *buf, const AnalyzerConfig *cfg,
 }
 
 int analyzer_start(void) {
+    if (!s_buf) return -1;
     return pthread_create(&s_thread, NULL, analyzer_thread, NULL);
 }
 
