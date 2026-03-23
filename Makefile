@@ -1,21 +1,24 @@
 # Makefile for HGW-Doctor
 #
+# Builds a single shared library (hgw_doctor.so) loaded by amxrt.
+#
 # Usage:
 #   make                          -> native host build
+#   make DEBUG=1                  -> native debug build (-g -O0)
 #   make CROSS_COMPILE=aarch64-openwrt-linux-musl- \
 #        STAGING_DIR=/prplos-build/prplos/staging_dir/target-aarch64_cortex-a72_musl
-#                               -> cross-compile for RPi4 using PrplOS toolchain
+#                                 -> cross-compile for RPi4 / PrplOS
+#
+#   amxrt odl/hgw-doctor.odl     -> run the plugin
 #
 # Design note:
-#   CFLAGS / LDFLAGS are intentionally kept as pass-through variables so that
-#   the OpenWrt build system can inject its hardening flags via the command line.
-#   Project-specific flags (include paths, libraries) live in EXTRA_CFLAGS /
-#   EXTRA_LDFLAGS so they are always appended regardless of how CFLAGS is set.
+#   CFLAGS / LDFLAGS are kept as pass-through variables so the OpenWrt build
+#   system can inject hardening flags via the command line.
+#   Project-specific flags live in EXTRA_CFLAGS / EXTRA_LDFLAGS.
 
-CC      := $(CROSS_COMPILE)gcc
-AR      := $(CROSS_COMPILE)ar
+CC := $(CROSS_COMPILE)gcc
 
-# If STAGING_DIR is set (cross-compile) use it; fall back to system paths.
+# If STAGING_DIR is set (cross-compile) use it; otherwise fall back to system.
 ifdef STAGING_DIR
     AMX_INC  := $(STAGING_DIR)/usr/include
     AMX_LDIR := $(STAGING_DIR)/usr/lib
@@ -24,61 +27,50 @@ else
     AMX_LDIR :=
 endif
 
-# Always-added flags (not overridable by command-line CFLAGS)
-# Note: headers are included as <amxd/amxd_dm.h>, <amxc/amxc_var.h> etc.
-# so the -I path must point to the *parent* directory (usr/include), not
-# the subdirectory (usr/include/amxd).
-EXTRA_CFLAGS  := -Wall -Wextra -Werror \
-                 -I./include \
-                 -I$(AMX_INC) \
-                 -D_GNU_SOURCE
+DEBUG_FLAGS := $(if $(DEBUG),-g -O0,-O2)
+
+# All objects go into the .so → every TU needs -fPIC.
+EXTRA_CFLAGS := -Wall -Wextra -Werror -fPIC \
+                $(DEBUG_FLAGS) \
+                -I./include_priv \
+                -I$(AMX_INC) \
+                -D_GNU_SOURCE
 
 EXTRA_LDFLAGS := $(if $(AMX_LDIR),-L$(AMX_LDIR),) \
-                 -lamxd -lamxo -lamxc -lamxp -lamxs \
-                 -lcurl -lpthread -lm
+                 -lamxd -lamxo -lamxc -lamxp -lamxb \
+                 -shared -fPIC
 
-SRC_DIR  = src
-OBJ_DIR  = build/obj
-BIN_DIR  = build/bin
-SO_DIR   = build/lib
+# ── Sources: only the five new plugin files ──────────────────────────────────
+SRCS := src/hgwdoctor_main.c \
+        src/hgwd_metrics.c \
+        src/hgwd_events.c \
+        src/hgwd_recovery.c \
+        src/hgwd_dm_methods.c
 
-SRCS     = $(wildcard $(SRC_DIR)/*.c)
-OBJS     = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
-DAEMON   = $(BIN_DIR)/hgw-doctor
-SHARED   = $(SO_DIR)/hgw_doctor.so
+OBJ_DIR := build/obj
+LIB_DIR := build/lib
+OBJS    := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(SRCS))
+SHARED  := $(LIB_DIR)/hgw_doctor.so
 
-.PHONY: all clean install test
+.PHONY: all clean install
 
-all: $(DAEMON) $(SHARED)
+all: $(SHARED)
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+$(OBJ_DIR)/%.o: src/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -c $< -o $@
 
-# Main daemon binary (all objects except datamodel which goes in .so)
-# $(SHARED) is built first (prerequisite), then passed directly on the link
-# line so the linker resolves datamodel_* symbols without needing lib prefix.
-$(DAEMON): $(filter-out $(OBJ_DIR)/datamodel.o, $(OBJS)) $(SHARED) | $(BIN_DIR)
-	$(CC) $(filter %.o, $^) $(SHARED) -o $@ $(LDFLAGS) $(EXTRA_LDFLAGS) -rdynamic
+$(SHARED): $(OBJS) | $(LIB_DIR)
+	$(CC) $(LDFLAGS) $(EXTRA_LDFLAGS) \
+	      -Wl,-soname,hgw_doctor.so \
+	      $(OBJS) -o $@
 
-# Shared library containing Ambiorix entry-point callbacks
-$(SHARED): $(OBJ_DIR)/datamodel.o | $(SO_DIR)
-	$(CC) -shared -fPIC -Wl,-soname,hgw_doctor.so $< -o $@ $(LDFLAGS) $(EXTRA_LDFLAGS)
-
-$(OBJ_DIR) $(BIN_DIR) $(SO_DIR):
+$(OBJ_DIR) $(LIB_DIR):
 	mkdir -p $@
 
 clean:
 	rm -rf build/
 
 install: all
-	install -D -m 755 $(DAEMON)  /usr/sbin/hgw-doctor
-	install -D -m 644 $(SHARED)  /usr/lib/hgw_doctor.so
-	install -D -m 644 conf/hgw_doctor.conf         /etc/hgw_doctor/hgw_doctor.conf
-	install -D -m 644 odl/hgw_doctor.odl           /etc/amx/hgw_doctor/hgw_doctor.odl
-	install -D -m 644 odl/hgw_doctor_defaults.odl  /etc/amx/hgw_doctor/hgw_doctor_defaults.odl
-	install -D -m 644 odl/hgw_doctor_caps.odl      /etc/amx/hgw_doctor/hgw_doctor_caps.odl
-	install -D -m 755 actions/restart_process.sh   /usr/lib/hgw_doctor/actions/restart_process.sh
-	install -D -m 755 actions/clear_cache.sh       /usr/lib/hgw_doctor/actions/clear_cache.sh
-
-test:
-	$(MAKE) -C tests/
+	install -D -m 755 $(SHARED)                         /usr/lib/hgw_doctor.so
+	install -D -m 644 odl/hgw-doctor.odl               /etc/amx/hgw-doctor/hgw-doctor.odl
+	install -D -m 644 odl/hgw-doctor_definition.odl    /etc/amx/hgw-doctor/hgw-doctor_definition.odl
