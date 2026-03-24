@@ -25,16 +25,23 @@ define Package/hgw-doctor/description
 endef
 
 # -----------------------------------------------------------------------
-# Prepare: copy source tree into the build directory
+# Prepare: copy the full source tree into the build directory
+# $(CURDIR) = .../package/hgw-doctor (the openwrt/ dir in your repo)
+# So the project root is one level up: $(CURDIR)/..
 # -----------------------------------------------------------------------
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./src/. $(PKG_BUILD_DIR)/
-	rm -rf $(PKG_BUILD_DIR)/build $(PKG_BUILD_DIR)/openwrt
+	$(CP) $(CURDIR)/../src         $(PKG_BUILD_DIR)/src
+	$(CP) $(CURDIR)/../include     $(PKG_BUILD_DIR)/include
+	$(CP) $(CURDIR)/../odl         $(PKG_BUILD_DIR)/odl
+	$(CP) $(CURDIR)/../conf        $(PKG_BUILD_DIR)/conf
+	$(CP) $(CURDIR)/../actions     $(PKG_BUILD_DIR)/actions
+	$(CP) $(CURDIR)/../Makefile    $(PKG_BUILD_DIR)/Makefile
+	$(CP) $(CURDIR)/../makefile.inc $(PKG_BUILD_DIR)/makefile.inc
 endef
 
 # -----------------------------------------------------------------------
-# Compile: call the existing Makefile with the OpenWrt cross-toolchain
+# Compile: call the project Makefile with the OpenWrt cross-toolchain
 # -----------------------------------------------------------------------
 define Build/Compile
 	$(MAKE) -C $(PKG_BUILD_DIR) \
@@ -52,9 +59,7 @@ define Package/hgw-doctor/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/build/bin/hgw-doctor        $(1)/usr/sbin/
 
-	# Ambiorix callback shared library.
-	# /usr/lib/hgw_doctor.so        — dynamic linker finds it here at startup
-	# /etc/amx/hgw_doctor/ symlink  — amxo parser searches the ODL directory
+	# Ambiorix callback shared library
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/build/lib/hgw_doctor.so     $(1)/usr/lib/
 	$(INSTALL_DIR) $(1)/etc/amx/hgw_doctor
@@ -77,7 +82,7 @@ define Package/hgw-doctor/install
 
 	# procd init script
 	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/hgw-doctor.init                      $(1)/etc/init.d/hgw-doctor
+	$(INSTALL_BIN) $(CURDIR)/files/hgw-doctor.init              $(1)/etc/init.d/hgw-doctor
 endef
 
 $(eval $(call BuildPackage,hgw-doctor))
