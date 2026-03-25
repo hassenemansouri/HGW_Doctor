@@ -16,7 +16,7 @@ EXTRA_CFLAGS  := -Wall -Wextra -Werror \
                  -D_GNU_SOURCE
 
 EXTRA_LDFLAGS := $(if $(AMX_LDIR),-L$(AMX_LDIR),) \
-                 -lamxd -lamxo -lamxc -lamxp -lamxs \
+                 -lamxd -lamxo -lamxc -lamxp -lamxs -lamxb \
                  -lcurl -lpthread -lm
 
 SRC_DIR  = src
