@@ -9,7 +9,7 @@
  *     diag_collector, uploader).
  *  5. Install signal handlers (SIGTERM/SIGINT for clean shutdown, SIGHUP for
  *     config reload).
- *  6. Enter the Ambiorix event loop (amxrt_run or manual el_add_fd loop).
+ *  6. Enter the main event loop (sleep-based, 1s tick).
  *  7. On exit: stop all modules, deregister data model, save persistent state.
  */
 
@@ -24,6 +24,7 @@
 #include <amxd/amxd_types.h>
 #include <amxd/amxd_dm.h>
 #include <amxo/amxo.h>
+#include <amxb/amxb.h>
 
 #include "config.h"
 #include "datamodel.h"
@@ -45,6 +46,7 @@ static volatile sig_atomic_t g_diag_req   = 0;  /* set by SIGUSR1 */
 static amxd_dm_t      g_dm;
 static amxo_parser_t  g_parser;
 static MetricCircBuf  g_metric_buf;
+static amxb_bus_ctx_t *g_bus_ctx = NULL;
 
 static const char *action_type_to_string(ActionType action) {
     switch (action) {
@@ -117,9 +119,16 @@ static void on_diag_done(const char *archive_path, void *userdata) {
 /* -------------------------------------------------------------------------
  * Upload done callback (uploader → datamodel)
  * ------------------------------------------------------------------------- */
-static void on_upload_done(UploadStatus status, const char *path, void *ud) {
-    (void)ud;
+static void on_upload_done(UploadStatus status, const char *path, void *userdata) {
+    (void)userdata;
+
     datamodel_record_upload(status, path);
+
+    if (status == UPLOAD_STATUS_SUCCESS) {
+        LOG_INFO("Upload succeeded: %s", path ? path : "<unknown>");
+    } else {
+        LOG_WARN("Upload failed for: %s", path ? path : "<unknown>");
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -147,6 +156,15 @@ int main(int argc, char *argv[]) {
     if (datamodel_init(&g_dm, &g_parser, cfg.odl_path) != 0) {
         LOG_ERROR("Failed to initialise data model - aborting");
         return EXIT_FAILURE;
+    }
+
+    /* Connect to ubus and register the data model */
+    amxb_be_load("/usr/bin/mods/amxb/mod-amxb-ubus.so");
+    if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
+        amxb_register(g_bus_ctx, &g_dm);
+        LOG_INFO("Registered data model on ubus");
+    } else {
+        LOG_WARN("Failed to connect to ubus - data model will not be visible on bus");
     }
 
     /* 5. Worker modules */
@@ -177,8 +195,8 @@ int main(int argc, char *argv[]) {
     ucfg.max_retries    = cfg.upload_max_retries;
     ucfg.retry_delay_s  = cfg.upload_retry_delay_s;
     ucfg.tls_verify     = cfg.tls_verify;
-    __builtin_strncpy(ucfg.url,          cfg.upload_url,    HGW_MAX_URL - 1);
-    __builtin_strncpy(ucfg.ca_cert_path, cfg.ca_cert_path,  HGW_MAX_PATH - 1);
+    __builtin_strncpy(ucfg.url,          cfg.upload_url,   HGW_MAX_URL - 1);
+    __builtin_strncpy(ucfg.ca_cert_path, cfg.ca_cert_path, HGW_MAX_PATH - 1);
     uploader_init(&ucfg, on_upload_done, NULL);
 
     /* 6. Start threads */
@@ -222,6 +240,11 @@ int main(int argc, char *argv[]) {
     recovery_cleanup();
     diag_collector_cleanup();
     uploader_cleanup();
+    if (g_bus_ctx) {
+        amxb_disconnect(g_bus_ctx);
+        amxb_free(&g_bus_ctx);
+    }
+    amxb_be_remove_all();
     datamodel_cleanup(&g_dm, &g_parser);
     amxo_parser_clean(&g_parser);
     amxd_dm_clean(&g_dm);
