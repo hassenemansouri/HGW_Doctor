@@ -29,6 +29,7 @@ static char            s_proc_name[HGW_MAX_PROC_NAME] = {0};
 static uint32_t        s_interval_s  = 5;
 static pthread_t       s_thread;
 static volatile int    s_stop        = 0;
+static volatile int    s_count       = 0;  /* total samples written */
 
 /* Previous /proc/stat values for CPU delta calculation */
 static unsigned long long s_prev_total = 0;
@@ -150,9 +151,9 @@ static void *monitor_thread(void *arg) {
         snap.proc_alive   = proc_is_alive(s_proc_name, &snap.proc_pid);
 
         /* Push to circular buffer (overwrite oldest if full) */
-        int next_head = (s_buf->head + 1) % HGW_CIRC_BUF_SIZE;
         s_buf->slots[s_buf->head] = snap;
-        s_buf->head = next_head;
+        s_buf->head = (s_buf->head + 1) % HGW_CIRC_BUF_SIZE;
+        s_count++;
 
         LOG_DEBUG("Sample: cpu=%u%% mem=%u%% free=%ukB proc_alive=%d",
                   snap.cpu_pct, snap.mem_used_pct,
@@ -170,6 +171,7 @@ int monitor_init(MetricCircBuf *buf, const char *proc_name, uint32_t interval_s)
     s_buf        = buf;
     s_interval_s = (interval_s > 0) ? interval_s : 5;
     s_stop       = 0;
+    s_count      = 0;
     memset(buf, 0, sizeof(*buf));
 
     if (proc_name)
@@ -188,7 +190,7 @@ void monitor_stop(void) {
 }
 
 bool monitor_peek_latest(MetricSnapshot *out) {
-    if (s_buf->head == s_buf->tail) return false;
+    if (s_count == 0) return false;
     int latest = (s_buf->head - 1 + HGW_CIRC_BUF_SIZE) % HGW_CIRC_BUF_SIZE;
     *out = s_buf->slots[latest];
     return true;

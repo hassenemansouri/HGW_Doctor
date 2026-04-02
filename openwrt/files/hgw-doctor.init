@@ -1,0 +1,39 @@
+#!/bin/sh /etc/rc.common
+# HGW-Doctor procd init script
+# Manages the hgw-doctor daemon under PrplOS/OpenWrt procd
+
+USE_PROCD=1
+START=95    # start after network (90) and bus daemon (80) are up
+STOP=10
+
+PROG=/usr/sbin/hgw-doctor
+CONFIG=/etc/hgw_doctor/hgw_doctor.conf
+
+start_service() {
+    procd_open_instance
+    procd_set_param command "$PROG" "$CONFIG"
+
+    # Auto-restart on crash:
+    #   threshold = 3600s (reset crash counter after 1h of stability)
+    #   timeout   = 5s    (wait before restarting)
+    #   max retries = 5   (give up after 5 crashes)
+    procd_set_param respawn 3600 5 5
+
+    # Forward daemon stdout/stderr to syslog
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+
+    # Restart automatically if the config file changes
+    procd_set_param file "$CONFIG"
+
+    procd_close_instance
+}
+
+reload_service() {
+    # SIGHUP triggers config reload in the daemon
+    kill -HUP "$(pidof hgw-doctor)" 2>/dev/null
+}
+
+stop_service() {
+    kill -TERM "$(pidof hgw-doctor)" 2>/dev/null
+}

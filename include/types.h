@@ -9,6 +9,7 @@
 #ifndef HGW_DOCTOR_TYPES_H
 #define HGW_DOCTOR_TYPES_H
 
+#include <sys/types.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
@@ -35,6 +36,12 @@ typedef struct {
     bool            proc_alive;   /**< true if monitored process is running  */
     pid_t           proc_pid;     /**< PID of monitored process (0 if none)  */
 } MetricSnapshot;
+
+typedef struct {
+    MetricSnapshot slots[HGW_CIRC_BUF_SIZE];
+    int            head;          /**< next write index                      */
+    int            tail;          /**< reserved for future consumers         */
+} MetricCircBuf;
 
 /* -------------------------------------------------------------------------
  * Anomaly types
@@ -83,5 +90,12 @@ typedef struct {
     char            process_name[HGW_MAX_PROC_NAME];
     int             exit_code;    /**< Exit code of helper script            */
 } RecoveryResult;
+
+typedef enum {
+    UPLOAD_STATUS_NONE    = 0,
+    UPLOAD_STATUS_PENDING = 1,
+    UPLOAD_STATUS_SUCCESS = 2,
+    UPLOAD_STATUS_FAILED  = 3,
+} UploadStatus;
 
 #endif /* HGW_DOCTOR_TYPES_H */

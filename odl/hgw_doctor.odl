@@ -18,6 +18,7 @@
  * ------------------------------------------------------------------------- */
 %config {
     /* Module shared-object to load; contains all C callback implementations */
+    name = "hgw-doctor";
     import-dbg = false;
     auto-resolver-order = [ "ftab", "auto" ];
 
@@ -80,22 +81,14 @@ import "hgw_doctor.so" as "hgw_doctor";
          * CPU usage percentage above which an anomaly is declared.
          * Range: 1-100. Default: 90.
          */
-        %attr constrained uint32 CPUThreshold {
-            default     = 90;
-            minimum     = 1;
-            maximum     = 100;
-        }
+        uint32 CPUThreshold = 90;
 
         /**
          * MemThreshold (uint32, RW)
          * Memory usage percentage above which an anomaly is declared.
          * Range: 1-100. Default: 90.
          */
-        %attr constrained uint32 MemThreshold {
-            default     = 90;
-            minimum     = 1;
-            maximum     = 100;
-        }
+        uint32 MemThreshold = 90;
 
         /**
          * ThresholdDuration (uint32, RW)
@@ -109,11 +102,7 @@ import "hgw_doctor.so" as "hgw_doctor";
          * Interval in seconds between successive metric samples.
          * Default: 5 seconds. Minimum: 1.
          */
-        %attr constrained uint32 PollInterval {
-            default     = 5;
-            minimum     = 1;
-            maximum     = 3600;
-        }
+        uint32 PollInterval = 5;
 
         /* -----------------------------------------------------------------
          * 3.3  Recovery configuration
@@ -264,21 +253,13 @@ import "hgw_doctor.so" as "hgw_doctor";
              * CPUThreshold (uint32, RW)
              * Per-profile CPU threshold (overrides top-level when active).
              */
-            %attr constrained uint32 CPUThreshold {
-                default = 90;
-                minimum = 1;
-                maximum = 100;
-            }
+            uint32 CPUThreshold = 90;
 
             /**
              * MemThreshold (uint32, RW)
              * Per-profile memory threshold.
              */
-            %attr constrained uint32 MemThreshold {
-                default = 90;
-                minimum = 1;
-                maximum = 100;
-            }
+            uint32 MemThreshold = 90;
 
             /**
              * ThresholdDuration (uint32, RW)
@@ -296,11 +277,7 @@ import "hgw_doctor.so" as "hgw_doctor";
              * PollInterval (uint32, RW)
              * Per-profile poll interval in seconds.
              */
-            %attr constrained uint32 PollInterval {
-                default = 5;
-                minimum = 1;
-                maximum = 3600;
-            }
+            uint32 PollInterval = 5;
 
             /**
              * Description (string, RW)
@@ -355,39 +332,24 @@ import "hgw_doctor.so" as "hgw_doctor";
          * On-demand diagnostic collection and upload.
          * Returns: 0 on success, non-zero on failure.
          */
-        uint32 TriggerDiagnostics() {
-            call hgw_doctor.dm_trigger_diagnostics;
-        }
+        uint32 TriggerDiagnostics() <!import:hgw_doctor:dm_trigger_diagnostics!>;
 
         /**
          * ResetCounters()
          * Resets AnomalyCount, Stats.TotalRecoveryActions, Stats.TotalDiagUploads to 0.
          */
-        void ResetCounters() {
-            call hgw_doctor.dm_reset_counters;
-        }
+        void ResetCounters() <!import:hgw_doctor:dm_reset_counters!>;
 
         /**
          * SetProfile(string ProfileName)
          * Activates a named profile from the Profiles table.
          * Returns: 0 on success, -1 if profile not found.
          */
-        int32 SetProfile(%in string ProfileName) {
-            call hgw_doctor.dm_set_profile;
-        }
+        int32 SetProfile(%in string ProfileName) <!import:hgw_doctor:dm_set_profile!>;
     }
 }
 
 /* -------------------------------------------------------------------------
- * 4. Event subscriptions
- *    Subscribe to parameter changes so the daemon C code is notified.
- * ------------------------------------------------------------------------- */
-%define {
-    on event "dm:object-changed" call hgw_doctor.dm_on_param_changed
-        filter 'path starts with "X_TELNET_HGWDoctor."';
-}
-
-/* -------------------------------------------------------------------------
- * 5. Include default values and persistent state
+ * 4. Include default values and persistent state
  * ------------------------------------------------------------------------- */
 #include "hgw_doctor_defaults.odl";

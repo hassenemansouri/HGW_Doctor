@@ -1,7 +1,6 @@
 /**
  * @file main.c
  * @brief HGW-Doctor daemon entry point.
- *
  * Responsibilities:
  *  1. Parse command-line arguments.
  *  2. Load configuration (config.c).
@@ -10,17 +9,22 @@
  *     diag_collector, uploader).
  *  5. Install signal handlers (SIGTERM/SIGINT for clean shutdown, SIGHUP for
  *     config reload).
- *  6. Enter the Ambiorix event loop (amxrt_run or manual el_add_fd loop).
+ *  6. Enter the main event loop (sleep-based, 1s tick).
  *  7. On exit: stop all modules, deregister data model, save persistent state.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <string.h>
 #include <unistd.h>
 
+#include <amxc/amxc.h>
+#include <amxp/amxp.h>
+#include <amxd/amxd_types.h>
 #include <amxd/amxd_dm.h>
 #include <amxo/amxo.h>
+#include <amxb/amxb.h>
 
 #include "config.h"
 #include "datamodel.h"
@@ -37,10 +41,22 @@
  * ------------------------------------------------------------------------- */
 static volatile sig_atomic_t g_running    = 1;
 static volatile sig_atomic_t g_reload_cfg = 0;
+static volatile sig_atomic_t g_diag_req   = 0;  /* set by SIGUSR1 */
 
 static amxd_dm_t      g_dm;
 static amxo_parser_t  g_parser;
 static MetricCircBuf  g_metric_buf;
+static amxb_bus_ctx_t *g_bus_ctx = NULL;
+
+static const char *action_type_to_string(ActionType action) {
+    switch (action) {
+        case ACTION_PROCESS_RESTART: return "ProcessRestart";
+        case ACTION_CACHE_CLEAR:     return "CacheClear";
+        case ACTION_REBOOT:          return "Reboot";
+        case ACTION_NONE:
+        default:                     return "None";
+    }
+}
 
 /* -------------------------------------------------------------------------
  * Signal handlers
@@ -51,8 +67,7 @@ static void sig_handler(int signo) {
     } else if (signo == SIGHUP) {
         g_reload_cfg = 1;
     } else if (signo == SIGUSR1) {
-        /* Manual on-demand diagnostics trigger from shell */
-        diag_collect(NULL);
+        g_diag_req = 1;
     }
 }
 
@@ -74,7 +89,11 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
     LOG_WARN("Anomaly detected: type=%d value=%u%% duration=%us",
              event->type, event->metric_value, event->duration_s);
 
+    const HgwConfig *cfg = config_get();
     datamodel_increment_anomaly_count();
+    datamodel_append_anomaly_log(event,
+                                 action_type_to_string(cfg ? cfg->action_type : ACTION_NONE),
+                                 "None");
     diag_collect(event);
     recovery_dispatch(event);
 }
@@ -100,9 +119,16 @@ static void on_diag_done(const char *archive_path, void *userdata) {
 /* -------------------------------------------------------------------------
  * Upload done callback (uploader → datamodel)
  * ------------------------------------------------------------------------- */
-static void on_upload_done(UploadStatus status, const char *path, void *ud) {
-    (void)ud;
+static void on_upload_done(UploadStatus status, const char *path, void *userdata) {
+    (void)userdata;
+
     datamodel_record_upload(status, path);
+
+    if (status == UPLOAD_STATUS_SUCCESS) {
+        LOG_INFO("Upload succeeded: %s", path ? path : "<unknown>");
+    } else {
+        LOG_WARN("Upload failed for: %s", path ? path : "<unknown>");
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -132,37 +158,44 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
+    /* Connect to ubus and register the data model */
+    amxb_be_load("/usr/bin/mods/amxb/mod-amxb-ubus.so");
+if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
+    LOG_INFO("Connected to ubus");
+} else {
+    LOG_WARN("Failed to connect to ubus");
+}
+
     /* 5. Worker modules */
     monitor_init(&g_metric_buf, cfg.process_name, cfg.poll_interval_s);
 
-    AnalyzerConfig acfg = {
-        .cpu_threshold_pct   = cfg.cpu_threshold_pct,
-        .mem_threshold_pct   = cfg.mem_threshold_pct,
-        .threshold_duration_s = cfg.threshold_duration_s,
-        .poll_interval_s     = cfg.poll_interval_s,
-    };
+    AnalyzerConfig acfg = {0};
+    acfg.cpu_threshold_pct    = cfg.cpu_threshold_pct;
+    acfg.mem_threshold_pct    = cfg.mem_threshold_pct;
+    acfg.threshold_duration_s = cfg.threshold_duration_s;
+    acfg.poll_interval_s      = cfg.poll_interval_s;
+    __builtin_strncpy(acfg.process_name, cfg.process_name, HGW_MAX_PROC_NAME - 1);
     analyzer_init(&g_metric_buf, &acfg, on_anomaly, NULL);
 
-    RecoveryConfig rcfg = { .action_type = cfg.action_type, .scripts_dir = "" };
+    RecoveryConfig rcfg = {0};
+    rcfg.action_type = cfg.action_type;
     __builtin_strncpy(rcfg.process_name, cfg.process_name, HGW_MAX_PROC_NAME - 1);
     __builtin_strncpy(rcfg.scripts_dir,  cfg.scripts_dir,  HGW_MAX_PATH - 1);
     recovery_init(&rcfg, on_recovery_done, NULL);
 
-    DiagConfig dcfg = {
-        .max_archives = cfg.diag_max_archives,
-        .watch_pid    = 0,
-    };
+    DiagConfig dcfg = {0};
+    dcfg.max_archives = cfg.diag_max_archives;
+    dcfg.watch_pid    = 0;
     __builtin_strncpy(dcfg.output_dir, cfg.diag_output_dir, HGW_MAX_PATH - 1);
     diag_collector_init(&dcfg, on_diag_done, NULL);
 
-    UploaderConfig ucfg = {
-        .timeout_s      = cfg.upload_timeout_s,
-        .max_retries    = cfg.upload_max_retries,
-        .retry_delay_s  = cfg.upload_retry_delay_s,
-        .tls_verify     = cfg.tls_verify,
-    };
-    __builtin_strncpy(ucfg.url,          cfg.upload_url,    HGW_MAX_URL - 1);
-    __builtin_strncpy(ucfg.ca_cert_path, cfg.ca_cert_path,  HGW_MAX_PATH - 1);
+    UploaderConfig ucfg = {0};
+    ucfg.timeout_s      = cfg.upload_timeout_s;
+    ucfg.max_retries    = cfg.upload_max_retries;
+    ucfg.retry_delay_s  = cfg.upload_retry_delay_s;
+    ucfg.tls_verify     = cfg.tls_verify;
+    __builtin_strncpy(ucfg.url,          cfg.upload_url,   HGW_MAX_URL - 1);
+    __builtin_strncpy(ucfg.ca_cert_path, cfg.ca_cert_path, HGW_MAX_PATH - 1);
     uploader_init(&ucfg, on_upload_done, NULL);
 
     /* 6. Start threads */
@@ -173,11 +206,27 @@ int main(int argc, char *argv[]) {
     LOG_INFO("HGW-Doctor running");
 
     /* 7. Main event loop */
+    uint32_t uptime_s = 0;
     while (g_running) {
         if (g_reload_cfg) {
             g_reload_cfg = 0;
             config_reload();
         }
+        if (g_diag_req) {
+            g_diag_req = 0;
+            LOG_INFO("On-demand diagnostics requested via SIGUSR1");
+            diag_collect(NULL);
+        }
+
+        /* Push latest metrics into the TR-181 data model */
+        MetricSnapshot snap;
+        if (monitor_peek_latest(&snap)) {
+            datamodel_update_stats(snap.cpu_pct, snap.mem_used_pct,
+                                   snap.mem_free_kb);
+        }
+        uptime_s++;
+        datamodel_update_uptime(uptime_s);
+
         /* TODO: replace sleep with amxrt event loop when bus backend integrated */
         sleep(1);
     }
@@ -190,6 +239,11 @@ int main(int argc, char *argv[]) {
     recovery_cleanup();
     diag_collector_cleanup();
     uploader_cleanup();
+    if (g_bus_ctx) {
+        amxb_disconnect(g_bus_ctx);
+        amxb_free(&g_bus_ctx);
+    }
+    amxb_be_remove_all();
     datamodel_cleanup(&g_dm, &g_parser);
     amxo_parser_clean(&g_parser);
     amxd_dm_clean(&g_dm);

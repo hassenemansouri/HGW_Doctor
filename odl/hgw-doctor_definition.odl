@@ -1,0 +1,132 @@
+/**
+ * hgw-doctor_definition.odl
+ *
+ * Data model schema for HGW-Doctor.
+ * Root singleton: GatewayHealth
+ *
+ * Parsed by libamxo; registered into the Ambiorix data model and
+ * exposed on the bus (ubus/USP) by amxrt.
+ */
+
+%define {
+
+    /**
+     * GatewayHealth
+     *
+     * Root singleton providing live system metrics, configurable thresholds,
+     * recovery actions, and per-process liveness monitoring.
+     */
+    object GatewayHealth {
+
+        /* ── Live metrics (read-only, updated every poll interval) ──────── */
+
+        /**
+         * Health (string, RO)
+         * Overall gateway health derived from threshold checks.
+         * Values: "Good" | "Warning" | "Critical" | "Unknown"
+         */
+        %read-only string Health = "Unknown";
+
+        /**
+         * CpuUsage (uint32, RO)
+         * CPU utilisation percentage (0-100) from /proc/stat.
+         */
+        %read-only uint32 CpuUsage = 0;
+
+        /**
+         * MemUsage (uint32, RO)
+         * Memory utilisation percentage (0-100) from /proc/meminfo.
+         */
+        %read-only uint32 MemUsage = 0;
+
+        /* ── Configurable thresholds (persistent across restarts) ────────── */
+
+        /**
+         * CpuThreshold (uint32, RW, persistent)
+         * CPU % above which an anomaly is declared after HGWD_SUSTAINED_SAMPLES
+         * consecutive poll ticks. Default: 90.
+         */
+        %persistent uint32 CpuThreshold = 90;
+
+        /**
+         * MemThreshold (uint32, RW, persistent)
+         * Memory % above which an anomaly is declared. Default: 90.
+         */
+        %persistent uint32 MemThreshold = 90;
+
+        /* ── Recovery actions (persistent) ──────────────────────────────── */
+
+        /**
+         * CpuRecoveryAction (string, RW, persistent)
+         * Action executed on CPU anomaly.
+         * Values: "NO_ACTION" | "KILL_TOP" | "REBOOT"
+         */
+        %persistent string CpuRecoveryAction = "NO_ACTION";
+
+        /**
+         * MemRecoveryAction (string, RW, persistent)
+         * Action executed on memory anomaly.
+         * Values: "NO_ACTION" | "DROP_CACHES" | "REBOOT"
+         */
+        %persistent string MemRecoveryAction = "NO_ACTION";
+
+        /* ── Watched processes (multi-instance table) ────────────────────── */
+
+        /**
+         * WatchedProcess[]
+         * Each instance represents one process to monitor for liveness.
+         * Path: GatewayHealth.WatchedProcess.{i}.
+         */
+        object WatchedProcess[] {
+
+            /**
+             * Name (string, RW, key)
+             * Process name as it appears in /proc/<pid>/comm (max 15 chars).
+             * Used as the unique key and as the process name for RESTART.
+             */
+            %key string Name;
+
+            /**
+             * PidFile (string, RW)
+             * Absolute path to the process PID file (e.g. /var/run/foo.pid).
+             * When set, liveness is checked via kill(pid, 0) rather than a
+             * /proc name scan.  Leave empty to use name-based scanning.
+             */
+            string PidFile = "";
+
+            /**
+             * RecoveryAction (string, RW)
+             * Action taken when this process is found dead.
+             * Values: "NO_ACTION" | "RESTART" | "REBOOT"
+             */
+            string RecoveryAction = "NO_ACTION";
+
+            /**
+             * Health (string, RO)
+             * Liveness of this specific process.
+             * Values: "Good" | "Critical" | "Unknown"
+             */
+            %read-only string Health = "Unknown";
+        }
+
+        /* ── RPC methods ─────────────────────────────────────────────────── */
+
+        /**
+         * TriggerRecovery(%in string type)
+         *
+         * Manually trigger a recovery action without waiting for a sustained
+         * threshold.  type must be "cpu" or "mem".
+         */
+        void TriggerRecovery(%in string type)
+            <!import:hgw_doctor:hgwd_dm_trigger_recovery!>;
+
+        /**
+         * ResetHealth()
+         *
+         * Clear all sustained-threshold counters and set Health back to "Good".
+         * Use after a manual intervention to acknowledge the anomaly.
+         */
+        void ResetHealth()
+            <!import:hgw_doctor:hgwd_dm_reset_health!>;
+    }
+}
