@@ -23,8 +23,6 @@
 
 #include "datamodel.h"
 #include "tr181_params.h"
-#include "config.h"
-#include "diag_collector.h"
 #include "logger.h"
 #include "types.h"
 
@@ -273,8 +271,10 @@ amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
     LOG_INFO("OnDemand diagnostic trigger received from ACS/CLI");
 
     dm_set_bool(TR181_ON_DEMAND_TRIGGER, false);
-    int rc = diag_collect(NULL);
-    amxc_var_set(uint32_t, ret, (rc == 0) ? 0 : 1);
+    /* Signal the daemon to collect diagnostics via trigger file */
+    FILE *f = fopen("/tmp/hgw_diag_trigger", "w");
+    if (f) fclose(f);
+    amxc_var_set(uint32_t, ret, 0);
     return amxd_status_ok;
 }
 
@@ -313,9 +313,7 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
 amxd_status_t dm_on_param_changed(amxd_object_t *obj, amxd_function_t *fn,
                                    amxc_var_t *args, amxc_var_t *ret) {
     (void)obj; (void)fn; (void)args; (void)ret;
-    /* Re-read all relevant parameters and call config_apply_from_datamodel() */
-    /* Detailed implementation: read each param, build HgwConfig, call apply */
-    LOG_DEBUG("Data model parameter changed - reloading config");
-    config_reload();
+    /* Config reload is handled by the daemon via SIGHUP */
+    LOG_DEBUG("Data model parameter changed");
     return amxd_status_ok;
 }
