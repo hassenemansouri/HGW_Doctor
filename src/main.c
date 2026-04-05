@@ -25,6 +25,7 @@
 #include <amxd/amxd_dm.h>
 #include <amxo/amxo.h>
 #include <amxb/amxb.h>
+#include <amxb/amxb_register.h>
 
 #include "config.h"
 #include "datamodel.h"
@@ -160,11 +161,16 @@ int main(int argc, char *argv[]) {
 
     /* Connect to ubus and register the data model */
     amxb_be_load("/usr/bin/mods/amxb/mod-amxb-ubus.so");
-if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
-    LOG_INFO("Connected to ubus");
-} else {
-    LOG_WARN("Failed to connect to ubus");
-}
+    if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
+        LOG_INFO("Connected to ubus");
+        if (amxb_register(g_bus_ctx, &g_dm) == 0) {
+            LOG_INFO("Data model registered on ubus");
+        } else {
+            LOG_WARN("Failed to register data model on ubus");
+        }
+    } else {
+        LOG_WARN("Failed to connect to ubus");
+    }
 
     /* 5. Worker modules */
     monitor_init(&g_metric_buf, cfg.process_name, cfg.poll_interval_s);
