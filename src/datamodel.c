@@ -12,6 +12,7 @@
 
 #include <string.h>
 #include <time.h>
+#include <syslog.h>
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
@@ -23,7 +24,6 @@
 
 #include "datamodel.h"
 #include "tr181_params.h"
-#include "logger.h"
 #include "types.h"
 
 /* -------------------------------------------------------------------------
@@ -57,8 +57,8 @@ static int dm_split_path(const char *param_path, char *object_path,
 static void dm_apply_trans(amxd_trans_t *trans, const char *param_path) {
     amxd_status_t status = amxd_trans_apply(trans, s_dm);
     if (status != amxd_status_ok) {
-        LOG_WARN("Failed to apply transaction for %s (status=%d)",
-                 param_path ? param_path : "<transaction>", status);
+        syslog(LOG_WARNING, "Failed to apply transaction for %s (status=%d)",
+               param_path ? param_path : "<transaction>", status);
     }
 }
 
@@ -92,13 +92,13 @@ static void dm_set_param(const char *param_path, amxc_var_t *val) {
 
     obj = amxd_dm_findf(s_dm, "%s", object_path);
     if (!obj) {
-        LOG_WARN("Object not found: %s", object_path);
+        syslog(LOG_WARNING, "Object not found: %s", object_path);
         return;
     }
 
     param = amxd_object_get_param_def(obj, param_name);
     if (!param) {
-        LOG_WARN("Param not found: %s in %s", param_name, object_path);
+        syslog(LOG_WARNING, "Param not found: %s in %s", param_name, object_path);
         return;
     }
 
@@ -147,14 +147,14 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
 
     int rc = amxo_parser_parse_file(parser, odl_path, amxd_dm_get_root(dm));
     if (rc != 0) {
-        LOG_ERROR("Failed to parse ODL file: %s (rc=%d)", odl_path, rc);
+        syslog(LOG_ERR, "Failed to parse ODL file: %s (rc=%d)", odl_path, rc);
         return -1;
     }
 
     /* Invoke entry-points declared in the ODL (loads shared library) */
     amxo_parser_invoke_entry_points(parser, dm, AMXO_START);
 
-    LOG_INFO("Data model initialised from %s", odl_path);
+    syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
 }
 
@@ -169,7 +169,7 @@ void datamodel_cleanup(amxd_dm_t *dm, amxo_parser_t *parser) {
  * ------------------------------------------------------------------------- */
 void datamodel_set_status(const char *status_str) {
     dm_set_string(TR181_STATUS, status_str);
-    LOG_INFO("Status -> %s", status_str);
+    syslog(LOG_INFO, "Status -> %s", status_str);
 }
 
 void datamodel_update_stats(uint32_t cpu_pct, uint32_t mem_pct,
@@ -204,7 +204,7 @@ void datamodel_record_action(const RecoveryResult *r) {
     s_total_actions++;
     dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, s_total_actions);
 
-    LOG_INFO("Recovery action recorded: %s -> %s", type_str, result_str);
+    syslog(LOG_INFO, "Recovery action recorded: %s -> %s", type_str, result_str);
 }
 
 void datamodel_record_upload(UploadStatus status, const char *archive_path) {
@@ -268,7 +268,7 @@ void datamodel_update_uptime(uint32_t uptime_s) {
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                       amxc_var_t *args, amxc_var_t *ret) {
     (void)obj; (void)fn; (void)args;
-    LOG_INFO("OnDemand diagnostic trigger received from ACS/CLI");
+    syslog(LOG_INFO, "OnDemand diagnostic trigger received from ACS/CLI");
 
     dm_set_bool(TR181_ON_DEMAND_TRIGGER, false);
     /* Signal the daemon to collect diagnostics via trigger file */
@@ -287,7 +287,7 @@ amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
     dm_set_uint32(TR181_ANOMALY_COUNT,      0);
     dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, 0);
     dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, 0);
-    LOG_INFO("Counters reset via RPC");
+    syslog(LOG_INFO, "Counters reset via RPC");
     return amxd_status_ok;
 }
 
@@ -301,7 +301,7 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
     }
     /* Validate profile exists in Profiles table, then set active Profile param */
     dm_set_string(TR181_PROFILE, profile_name);
-    LOG_INFO("Active profile set to '%s' via RPC", profile_name);
+    syslog(LOG_INFO, "Active profile set to '%s' via RPC", profile_name);
     amxc_var_set(int32_t, ret, 0);
     return amxd_status_ok;
 }
@@ -314,6 +314,6 @@ amxd_status_t dm_on_param_changed(amxd_object_t *obj, amxd_function_t *fn,
                                    amxc_var_t *args, amxc_var_t *ret) {
     (void)obj; (void)fn; (void)args; (void)ret;
     /* Config reload is handled by the daemon via SIGHUP */
-    LOG_DEBUG("Data model parameter changed");
+    syslog(LOG_DEBUG, "Data model parameter changed");
     return amxd_status_ok;
 }
