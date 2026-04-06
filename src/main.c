@@ -225,7 +225,6 @@ int main(int argc, char *argv[]) {
             diag_collect(NULL);
         }
 
-        /* Push latest metrics into the TR-181 data model */
         MetricSnapshot snap;
         if (monitor_peek_latest(&snap)) {
             datamodel_update_stats(snap.cpu_pct, snap.mem_used_pct,
@@ -234,17 +233,24 @@ int main(int argc, char *argv[]) {
         uptime_s++;
         datamodel_update_uptime(uptime_s);
 
-        /* TODO: replace sleep with amxrt event loop when bus backend integrated */
-        fd_set rfds;
-        struct timeval tv;
-        int bus_fd = amxb_get_fd(g_bus_ctx);
-        FD_ZERO(&rfds);
-        if (bus_fd >= 0) FD_SET(bus_fd, &rfds);
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        int ret = select(bus_fd + 1, &rfds, NULL, NULL, &tv);
-        if (ret > 0 && bus_fd >= 0 && FD_ISSET(bus_fd, &rfds)) {
-            amxb_read(g_bus_ctx);
+        /* Process ubus events */
+        if (g_bus_ctx != NULL) {
+            int fd = amxb_get_fd(g_bus_ctx);
+            if (fd >= 0) {
+                fd_set rfds;
+                struct timeval tv = {1, 0};
+                FD_ZERO(&rfds);
+                FD_SET(fd, &rfds);
+                if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0) {
+                    amxb_read(g_bus_ctx);
+                } else {
+                    sleep(1);
+                }
+            } else {
+                sleep(1);
+            }
+        } else {
+            sleep(1);
         }
     }
 
