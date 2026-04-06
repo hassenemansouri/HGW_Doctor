@@ -31,13 +31,14 @@ endef
 # -----------------------------------------------------------------------
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) $(CURDIR)/../src         $(PKG_BUILD_DIR)/src
-	$(CP) $(CURDIR)/../include     $(PKG_BUILD_DIR)/include
-	$(CP) $(CURDIR)/../odl         $(PKG_BUILD_DIR)/odl
-	$(CP) $(CURDIR)/../conf        $(PKG_BUILD_DIR)/conf
-	$(CP) $(CURDIR)/../actions     $(PKG_BUILD_DIR)/actions
-	$(CP) $(CURDIR)/../Makefile    $(PKG_BUILD_DIR)/Makefile
-	$(CP) $(CURDIR)/../makefile.inc $(PKG_BUILD_DIR)/makefile.inc
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/src         $(PKG_BUILD_DIR)/src
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/include     $(PKG_BUILD_DIR)/include
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/odl         $(PKG_BUILD_DIR)/odl
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/conf        $(PKG_BUILD_DIR)/conf
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/actions     $(PKG_BUILD_DIR)/actions
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/Makefile    $(PKG_BUILD_DIR)/Makefile
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/makefile.inc $(PKG_BUILD_DIR)/makefile.inc
+	rm -rf $(PKG_BUILD_DIR)/build
 endef
 
 # -----------------------------------------------------------------------
@@ -82,7 +83,7 @@ define Package/hgw-doctor/install
 
 	# procd init script
 	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) $(CURDIR)/files/hgw-doctor.init              $(1)/etc/init.d/hgw-doctor
+	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/openwrt/files/hgw-doctor.init $(1)/etc/init.d/hgw-doctor
 endef
 
 $(eval $(call BuildPackage,hgw-doctor))
