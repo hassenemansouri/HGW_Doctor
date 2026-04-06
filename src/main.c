@@ -22,6 +22,7 @@
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
+#include <amxp/amxp_signal.h>
 #include <amxd/amxd_types.h>
 #include <amxd/amxd_dm.h>
 #include <amxo/amxo.h>
@@ -215,10 +216,7 @@ int main(int argc, char *argv[]) {
     /* 7. Main event loop */
     uint32_t uptime_s = 0;
     while (g_running) {
-        if (g_reload_cfg) {
-            g_reload_cfg = 0;
-            config_reload();
-        }
+        if (g_reload_cfg) { g_reload_cfg = 0; config_reload(); }
         if (g_diag_req) {
             g_diag_req = 0;
             LOG_INFO("On-demand diagnostics requested via SIGUSR1");
@@ -238,20 +236,15 @@ int main(int argc, char *argv[]) {
             int fd = amxb_get_fd(g_bus_ctx);
             if (fd >= 0) {
                 fd_set rfds;
-                struct timeval tv = {1, 0};
+                struct timeval tv = {0, 100000}; /* 100ms */
                 FD_ZERO(&rfds);
                 FD_SET(fd, &rfds);
                 if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0) {
                     amxb_read(g_bus_ctx);
-                } else {
-                    sleep(1);
                 }
-            } else {
-                sleep(1);
             }
-        } else {
-            sleep(1);
         }
+        amxp_signal_process();
     }
 
     /* 8. Graceful shutdown */
