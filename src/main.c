@@ -22,7 +22,7 @@
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
-#include <amxp/amxp_signal_mngr.h>
+
 #include <amxd/amxd_types.h>
 #include <amxd/amxd_dm.h>
 #include <amxo/amxo.h>
@@ -244,7 +244,7 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-        amxp_sigmngr_process_pending();
+        amxp_sigmngr_handle(amxd_dm_get_sigmngr(&g_dm));
     }
 
     /* 8. Graceful shutdown */
