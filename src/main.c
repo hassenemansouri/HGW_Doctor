@@ -18,13 +18,17 @@
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/select.h>
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
+#include <amxp/amxp_signal.h>
+
 #include <amxd/amxd_types.h>
 #include <amxd/amxd_dm.h>
 #include <amxo/amxo.h>
 #include <amxb/amxb.h>
+#include <amxb/amxb_register.h>
 
 #include "config.h"
 #include "datamodel.h"
@@ -160,11 +164,16 @@ int main(int argc, char *argv[]) {
 
     /* Connect to ubus and register the data model */
     amxb_be_load("/usr/bin/mods/amxb/mod-amxb-ubus.so");
-if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
-    LOG_INFO("Connected to ubus");
-} else {
-    LOG_WARN("Failed to connect to ubus");
-}
+    if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
+        LOG_INFO("Connected to ubus");
+        if (amxb_register(g_bus_ctx, &g_dm) == 0) {
+            LOG_INFO("Data model registered on ubus");
+        } else {
+            LOG_WARN("Failed to register data model on ubus");
+        }
+    } else {
+        LOG_WARN("Failed to connect to ubus");
+    }
 
     /* 5. Worker modules */
     monitor_init(&g_metric_buf, cfg.process_name, cfg.poll_interval_s);
@@ -208,17 +217,13 @@ if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
     /* 7. Main event loop */
     uint32_t uptime_s = 0;
     while (g_running) {
-        if (g_reload_cfg) {
-            g_reload_cfg = 0;
-            config_reload();
-        }
+        if (g_reload_cfg) { g_reload_cfg = 0; config_reload(); }
         if (g_diag_req) {
             g_diag_req = 0;
             LOG_INFO("On-demand diagnostics requested via SIGUSR1");
             diag_collect(NULL);
         }
 
-        /* Push latest metrics into the TR-181 data model */
         MetricSnapshot snap;
         if (monitor_peek_latest(&snap)) {
             datamodel_update_stats(snap.cpu_pct, snap.mem_used_pct,
@@ -227,8 +232,20 @@ if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
         uptime_s++;
         datamodel_update_uptime(uptime_s);
 
-        /* TODO: replace sleep with amxrt event loop when bus backend integrated */
-        sleep(1);
+        /* Process ubus events */
+        if (g_bus_ctx != NULL) {
+            int fd = amxb_get_fd(g_bus_ctx);
+            if (fd >= 0) {
+                fd_set rfds;
+                struct timeval tv = {0, 100000}; /* 100ms */
+                FD_ZERO(&rfds);
+                FD_SET(fd, &rfds);
+                if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0) {
+                    amxb_read(g_bus_ctx);
+                }
+            }
+        }
+        amxp_sigmngr_handle(NULL);
     }
 
     /* 8. Graceful shutdown */

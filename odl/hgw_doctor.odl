@@ -36,7 +36,7 @@ import "hgw_doctor.so" as "hgw_doctor";
  * 3. Data model definition
  * ------------------------------------------------------------------------- */
 %define {
-
+    
     /**
      * Device.X_TELNET_HGWDoctor.
      *
