@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/select.h>
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
@@ -234,7 +235,17 @@ int main(int argc, char *argv[]) {
         datamodel_update_uptime(uptime_s);
 
         /* TODO: replace sleep with amxrt event loop when bus backend integrated */
-        sleep(1);
+        fd_set rfds;
+        struct timeval tv;
+        int bus_fd = amxb_get_fd(g_bus_ctx);
+        FD_ZERO(&rfds);
+        if (bus_fd >= 0) FD_SET(bus_fd, &rfds);
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        int ret = select(bus_fd + 1, &rfds, NULL, NULL, &tv);
+        if (ret > 0 && bus_fd >= 0 && FD_ISSET(bus_fd, &rfds)) {
+            amxb_read(g_bus_ctx);
+        }
     }
 
     /* 8. Graceful shutdown */
