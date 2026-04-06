@@ -1,0 +1,5 @@
+CLAUDE.md
+build/
+*.o
+*.a
+*.so
