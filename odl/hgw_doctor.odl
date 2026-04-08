@@ -1,355 +1,92 @@
-/**
+/*
  * hgw_doctor.odl
  *
- * Main Object Definition Language file for the HGW-Doctor daemon.
- * Defines the TR-181-compliant data model under Device.X_TELNET_HGWDoctor.
- *
- * Parsed by libamxo at startup; registered into the Ambiorix data model
- * and made available to the ACS (TR-069/CWMP) via the ubus/PCB bus backend.
- *
- * Sections:
- *   %config  - parser / runtime configuration variables
- *   %define  - data model object and parameter declarations
- *   %populate - default runtime values (overridden by hgw_doctor_defaults.odl)
+ * TR-181 data model for HGW-Doctor: Device.X_TELNET_HGWDoctor.
+ * Parsed by libamxo at startup; registered on ubus via the Ambiorix bus backend.
  */
 
-/* -------------------------------------------------------------------------
- * 1. Parser and runtime configuration
- * ------------------------------------------------------------------------- */
+#include "hgw_doctor_prefix.odl";
+
 %config {
-    /* Module shared-object to load; contains all C callback implementations */
     name = "hgw-doctor";
     import-dbg = false;
     auto-resolver-order = [ "ftab", "auto" ];
 
-    /* Path where persistent state is saved between reboots */
+    /* persistent state is saved here on daemon stop */
     odl-save-path    = "/etc/amx/hgw_doctor/";
     odl-save-on-stop = true;
 }
 
-/* -------------------------------------------------------------------------
- * 2. Load the backend shared library that implements the C callbacks
- * ------------------------------------------------------------------------- */
 import "hgw_doctor.so" as "hgw_doctor";
 
-/* -------------------------------------------------------------------------
- * 3. Data model definition
- * ------------------------------------------------------------------------- */
 %define {
-    
-    /**
-     * Device.X_TELNET_HGWDoctor.
-     *
-     * Root singleton object for the HGW-Doctor monitoring daemon.
-     * All sub-objects and parameters are described below.
-     */
+
     object X_TELNET_HGWDoctor {
 
-        /* -----------------------------------------------------------------
-         * 3.1  Global control
-         * ----------------------------------------------------------------- */
-
-        /**
-         * Enable (boolean, RW)
-         * Globally enables or disables the HGW-Doctor daemon.
-         * When set to false all monitoring loops are suspended and no
-         * recovery actions will be triggered.
-         */
+        /* Global control */
         bool Enable = true;
-
-        /**
-         * Status (string, RO)
-         * Reflects the operational state of the daemon.
-         * Allowed values: "Enabled" | "Disabled" | "Error"
-         */
-        %read-only string Status = "Disabled";
-
-        /**
-         * Profile (string, RW)
-         * Active monitoring profile name.
-         * Must match a key in the Profiles multi-instance object below.
-         * Example values: "default", "aggressive", "conservative"
-         */
+        %read-only string Status = "Disabled";   /* "Enabled" | "Disabled" | "Error" */
         string Profile = "default";
 
-        /* -----------------------------------------------------------------
-         * 3.2  Monitoring thresholds (top-level, active profile overrides)
-         * ----------------------------------------------------------------- */
-
-        /**
-         * CPUThreshold (uint32, RW)
-         * CPU usage percentage above which an anomaly is declared.
-         * Range: 1-100. Default: 90.
-         */
-        uint32 CPUThreshold = 90;
-
-        /**
-         * MemThreshold (uint32, RW)
-         * Memory usage percentage above which an anomaly is declared.
-         * Range: 1-100. Default: 90.
-         */
+        /* Monitoring thresholds */
+        uint32 CPUThreshold = 90;       /* % above which anomaly is declared */
         uint32 MemThreshold = 90;
+        uint32 ThresholdDuration = 60;  /* consecutive seconds threshold must hold */
+        uint32 PollInterval = 5;        /* seconds between metric samples */
 
-        /**
-         * ThresholdDuration (uint32, RW)
-         * Number of consecutive seconds a threshold must be exceeded
-         * before an anomaly event is emitted. Default: 60 seconds.
-         */
-        uint32 ThresholdDuration = 60;
-
-        /**
-         * PollInterval (uint32, RW)
-         * Interval in seconds between successive metric samples.
-         * Default: 5 seconds. Minimum: 1.
-         */
-        uint32 PollInterval = 5;
-
-        /* -----------------------------------------------------------------
-         * 3.3  Recovery configuration
-         * ----------------------------------------------------------------- */
-
-        /**
-         * ActionType (string, RW)
-         * Recovery action to execute when an anomaly is detected.
-         * Allowed values:
-         *   "ProcessRestart" - send SIGHUP/SIGTERM to the monitored process
-         *   "CacheClear"     - drop page cache via /proc/sys/vm/drop_caches
-         *   "Reboot"         - trigger a controlled system reboot
-         *   "None"           - log anomaly only, no automatic recovery
-         */
+        /* Recovery */
+        /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None" */
         string ActionType = "ProcessRestart";
-
-        /**
-         * ProcessName (string, RW)
-         * Name of the process to restart when ActionType = "ProcessRestart".
-         * Leave empty to disable process-specific recovery.
-         */
         string ProcessName = "";
 
-        /* -----------------------------------------------------------------
-         * 3.4  Recovery status (read-only, updated by the daemon after action)
-         * ----------------------------------------------------------------- */
-
-        /**
-         * LastActionType (string, RO)
-         * Type of the last recovery action that was executed.
-         */
+        /* Recovery status (RO, updated after each action) */
         %read-only string LastActionType = "";
-
-        /**
-         * LastActionTime (datetime, RO)
-         * UTC timestamp of the last recovery action execution.
-         * Format: ISO-8601 (e.g. "2026-03-10T08:00:00Z")
-         */
         %read-only datetime LastActionTime;
-
-        /**
-         * LastActionStatus (string, RO)
-         * Result of the last recovery action.
-         * Allowed values: "Success" | "Failure" | "InProgress" | "None"
-         */
         %read-only string LastActionStatus = "None";
-
-        /**
-         * AnomalyCount (uint32, RO)
-         * Total number of anomalies detected since the daemon started
-         * (or since last reboot / counter reset).
-         */
         %read-only uint32 AnomalyCount = 0;
 
-        /* -----------------------------------------------------------------
-         * 3.5  Diagnostics & upload
-         * ----------------------------------------------------------------- */
-
-        /**
-         * OnDemandTrigger (bool, RW)
-         * Writing true immediately triggers diagnostic collection and upload.
-         * The daemon resets this parameter to false once the operation starts.
-         */
-        bool OnDemandTrigger = false;
-
-        /**
-         * DiagArchivePath (string, RO)
-         * Filesystem path of the last generated diagnostics archive.
-         * Example: "/tmp/hgw_diag/diag_20260310_080000.tar.gz"
-         */
+        /* Diagnostics & upload */
+        bool OnDemandTrigger = false;   /* write true to trigger on-demand collection */
         %read-only string DiagArchivePath = "";
-
-        /**
-         * UploadURL (string, RW)
-         * HTTPS endpoint where diagnostic archives are POSTed.
-         * Example: "https://diagnostics.telnet.tn/upload"
-         */
         string UploadURL = "";
-
-        /**
-         * UploadStatus (string, RO)
-         * Status of the most recent upload attempt.
-         * Allowed values: "Success" | "Failed" | "Pending" | "None"
-         */
         %read-only string UploadStatus = "None";
-
-        /**
-         * UploadTimestamp (datetime, RO)
-         * UTC timestamp of the last successful upload.
-         */
         %read-only datetime UploadTimestamp;
 
-        /* -----------------------------------------------------------------
-         * 3.6  Statistics (read-only counters)
-         * ----------------------------------------------------------------- */
+        /* Live statistics (RO) */
         object Stats {
-
-            /**
-             * CurrentCPUUsage (uint32, RO)
-             * Most recently sampled CPU usage percentage (0-100).
-             */
             %read-only uint32 CurrentCPUUsage = 0;
-
-            /**
-             * CurrentMemUsage (uint32, RO)
-             * Most recently sampled memory usage percentage (0-100).
-             */
             %read-only uint32 CurrentMemUsage = 0;
-
-            /**
-             * CurrentMemFreeKB (uint32, RO)
-             * Free memory in kilobytes as reported by /proc/meminfo.
-             */
             %read-only uint32 CurrentMemFreeKB = 0;
-
-            /**
-             * TotalRecoveryActions (uint32, RO)
-             * Cumulative number of recovery actions executed since last start.
-             */
             %read-only uint32 TotalRecoveryActions = 0;
-
-            /**
-             * TotalDiagUploads (uint32, RO)
-             * Cumulative number of successful diagnostic uploads.
-             */
             %read-only uint32 TotalDiagUploads = 0;
-
-            /**
-             * UptimeSeconds (uint32, RO)
-             * Number of seconds the HGW-Doctor daemon has been running.
-             */
             %read-only uint32 UptimeSeconds = 0;
         }
 
-        /* -----------------------------------------------------------------
-         * 3.7  Monitoring profiles (multi-instance table)
-         *       Path: Device.X_TELNET_HGWDoctor.Profiles.{i}.
-         * ----------------------------------------------------------------- */
+        /* Monitoring profiles — path: X_TELNET_HGWDoctor.Profiles.{i}. */
         object Profiles[] {
-
-            /**
-             * Name (string, RW, key)
-             * Unique profile name. Referenced by the top-level Profile param.
-             */
             %key string Name;
-
-            /**
-             * CPUThreshold (uint32, RW)
-             * Per-profile CPU threshold (overrides top-level when active).
-             */
             uint32 CPUThreshold = 90;
-
-            /**
-             * MemThreshold (uint32, RW)
-             * Per-profile memory threshold.
-             */
             uint32 MemThreshold = 90;
-
-            /**
-             * ThresholdDuration (uint32, RW)
-             * Per-profile sustained-threshold duration in seconds.
-             */
             uint32 ThresholdDuration = 60;
-
-            /**
-             * ActionType (string, RW)
-             * Per-profile recovery action.
-             */
             string ActionType = "ProcessRestart";
-
-            /**
-             * PollInterval (uint32, RW)
-             * Per-profile poll interval in seconds.
-             */
             uint32 PollInterval = 5;
-
-            /**
-             * Description (string, RW)
-             * Human-readable description of this profile.
-             */
             string Description = "";
         }
 
-        /* -----------------------------------------------------------------
-         * 3.8  Anomaly event log (multi-instance, read-only, capped at 50)
-         *       Path: Device.X_TELNET_HGWDoctor.AnomalyLog.{i}.
-         * ----------------------------------------------------------------- */
+        /* Anomaly event log — path: X_TELNET_HGWDoctor.AnomalyLog.{i}. */
         object AnomalyLog[] {
-
-            /**
-             * Timestamp (datetime, RO)
-             * UTC time the anomaly was detected.
-             */
             %read-only datetime Timestamp;
-
-            /**
-             * AnomalyType (string, RO)
-             * Which metric triggered the event: "CPU" | "Memory" | "Process"
-             */
-            %read-only string AnomalyType = "";
-
-            /**
-             * MetricValue (uint32, RO)
-             * Observed metric value at detection time (percentage or 0/1 for process).
-             */
+            %read-only string AnomalyType = "";   /* "CPU" | "Memory" | "Process" */
             %read-only uint32 MetricValue = 0;
-
-            /**
-             * ActionTaken (string, RO)
-             * Recovery action that was triggered in response.
-             */
             %read-only string ActionTaken = "";
-
-            /**
-             * ActionResult (string, RO)
-             * Outcome: "Success" | "Failure" | "None"
-             */
             %read-only string ActionResult = "";
         }
 
-        /* -----------------------------------------------------------------
-         * 3.9  RPC methods exposed on the data model bus
-         * ----------------------------------------------------------------- */
-
-        /**
-         * TriggerDiagnostics()
-         * On-demand diagnostic collection and upload.
-         * Returns: 0 on success, non-zero on failure.
-         */
+        /* RPC methods */
         uint32 TriggerDiagnostics() <!import:hgw_doctor:dm_trigger_diagnostics!>;
-
-        /**
-         * ResetCounters()
-         * Resets AnomalyCount, Stats.TotalRecoveryActions, Stats.TotalDiagUploads to 0.
-         */
         void ResetCounters() <!import:hgw_doctor:dm_reset_counters!>;
-
-        /**
-         * SetProfile(string ProfileName)
-         * Activates a named profile from the Profiles table.
-         * Returns: 0 on success, -1 if profile not found.
-         */
         int32 SetProfile(%in string ProfileName) <!import:hgw_doctor:dm_set_profile!>;
     }
 }
 
-/* -------------------------------------------------------------------------
- * 4. Include default values and persistent state
- * ------------------------------------------------------------------------- */
 #include "hgw_doctor_defaults.odl";
