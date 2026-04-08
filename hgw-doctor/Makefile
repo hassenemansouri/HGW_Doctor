@@ -75,6 +75,12 @@ define Package/hgw-doctor/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor.odl              $(1)/etc/amx/hgw_doctor/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor_defaults.odl     $(1)/etc/amx/hgw_doctor/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor_caps.odl         $(1)/etc/amx/hgw_doctor/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor_prefix.odl       $(1)/etc/amx/hgw_doctor/
+
+	# TR-181 device proxy mapping
+	$(INSTALL_DIR) $(1)/etc/amx/tr181-device/extensions
+	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/01_device-hgw_doctor_mapping.odl \
+		$(1)/etc/amx/tr181-device/extensions/
 
 	# Recovery action scripts
 	$(INSTALL_DIR) $(1)/usr/lib/hgw_doctor/actions
