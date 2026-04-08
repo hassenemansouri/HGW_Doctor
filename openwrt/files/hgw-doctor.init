@@ -40,6 +40,6 @@ stop_service() {
 
 boot() {
     start
-    sleep 5
+    sleep 15
     /etc/init.d/tr181-device reload 2>/dev/null || true
 }
