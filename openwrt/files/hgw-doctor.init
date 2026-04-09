@@ -37,9 +37,3 @@ reload_service() {
 stop_service() {
     kill -TERM "$(pidof hgw-doctor)" 2>/dev/null
 }
-
-boot() {
-    start
-    sleep 15
-    /etc/init.d/tr181-device reload 2>/dev/null || true
-}
