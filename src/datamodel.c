@@ -172,6 +172,24 @@ void datamodel_set_status(const char *status_str) {
     syslog(LOG_INFO, "Status -> %s", status_str);
 }
 
+void datamodel_set_config(const char *process_name, uint32_t cpu_threshold,
+                          uint32_t mem_threshold, uint32_t threshold_duration,
+                          uint32_t poll_interval) {
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "X_TELNET_HGWDoctor.");
+    if (!obj) return;
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_select_pathf(&trans, "X_TELNET_HGWDoctor.");
+    if (process_name && process_name[0] != '\0')
+        amxd_trans_set_value(cstring_t, &trans, "ProcessName", process_name);
+    amxd_trans_set_value(uint32_t, &trans, "CPUThreshold", cpu_threshold);
+    amxd_trans_set_value(uint32_t, &trans, "MemThreshold", mem_threshold);
+    amxd_trans_set_value(uint32_t, &trans, "ThresholdDuration", threshold_duration);
+    amxd_trans_set_value(uint32_t, &trans, "PollInterval", poll_interval);
+    amxd_trans_apply(&trans, s_dm);
+    amxd_trans_clean(&trans);
+}
+
 void datamodel_update_stats(uint32_t cpu_pct, uint32_t mem_pct,
                              uint32_t mem_free_kb) {
     dm_set_uint32(TR181_STAT_CPU,      cpu_pct);

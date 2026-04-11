@@ -1,22 +1,13 @@
 /**
  * @file main.c
- * @brief HGW-Doctor daemon entry point.
- * Responsibilities:
- *  1. Parse command-line arguments.
- *  2. Load configuration (config.c).
- *  3. Initialise the Ambiorix data model (datamodel.c).
- *  4. Initialise and start all worker modules (monitor, analyzer, recovery,
- *     diag_collector, uploader).
- *  5. Install signal handlers (SIGTERM/SIGINT for clean shutdown, SIGHUP for
- *     config reload).
- *  6. Enter the main event loop (sleep-based, 1s tick).
- *  7. On exit: stop all modules, deregister data model, save persistent state.
+ * @brief HGW-Doctor daemon entry point and main event loop.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/select.h>
 
@@ -100,6 +91,13 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
                                  "None");
     diag_collect(event);
     recovery_dispatch(event);
+
+    RecoveryResult rr = {0};
+    rr.action = cfg ? cfg->action_type : ACTION_NONE;
+    rr.result = RESULT_IN_PROGRESS;
+    clock_gettime(CLOCK_REALTIME, &rr.executed_at);
+    strncpy(rr.process_name, cfg ? cfg->process_name : "", HGW_MAX_PROC_NAME - 1);
+    datamodel_record_action(&rr);
 }
 
 /* -------------------------------------------------------------------------
@@ -185,6 +183,10 @@ int main(int argc, char *argv[]) {
     acfg.poll_interval_s      = cfg.poll_interval_s;
     __builtin_strncpy(acfg.process_name, cfg.process_name, HGW_MAX_PROC_NAME - 1);
     analyzer_init(&g_metric_buf, &acfg, on_anomaly, NULL);
+
+    datamodel_set_config(cfg.process_name, cfg.cpu_threshold_pct,
+                         cfg.mem_threshold_pct, cfg.threshold_duration_s,
+                         cfg.poll_interval_s);
 
     RecoveryConfig rcfg = {0};
     rcfg.action_type = cfg.action_type;
