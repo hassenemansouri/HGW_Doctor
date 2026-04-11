@@ -35,23 +35,30 @@ static uint32_t   s_total_actions = 0;
 static uint32_t   s_total_uploads = 0;
 
 static int dm_split_path(const char *param_path, char *object_path,
-                         size_t object_path_len, const char **param_name) {
+                         size_t object_path_len, char *param_name,
+                         size_t param_name_len) {
     const char *dot = strrchr(param_path, '.');
-    size_t len;
+    size_t obj_len, name_len;
 
     if (!param_path || !object_path || !param_name || !dot || dot == param_path) {
         return -1;
     }
 
-    len = (size_t) (dot - param_path);
-    if (len >= object_path_len) {
+    obj_len = (size_t)(dot - param_path);
+    if (obj_len >= object_path_len) {
         return -1;
     }
 
-    memcpy(object_path, param_path, len);
-    object_path[len] = '\0';
-    *param_name = dot + 1;
-    return (**param_name == '\0') ? -1 : 0;
+    name_len = strlen(dot + 1);
+    if (name_len == 0 || name_len >= param_name_len) {
+        return -1;
+    }
+
+    memcpy(object_path, param_path, obj_len);
+    object_path[obj_len] = '\0';
+    memcpy(param_name, dot + 1, name_len);
+    param_name[name_len] = '\0';
+    return 0;
 }
 
 static void dm_apply_trans(amxd_trans_t *trans, const char *param_path) {
@@ -78,31 +85,34 @@ static const char *anomaly_type_to_string(AnomalyType type) {
     }
 }
 
-/** Set a parameter value directly, bypassing access-control (works for %read-only). */
 static void dm_set_param(const char *param_path, amxc_var_t *val) {
-    char object_path[128];
-    const char *param_name = NULL;
-    amxd_object_t *obj;
-    amxd_param_t  *param;
+    char object_path[HGW_MAX_PATH];
+    char param_name[HGW_MAX_PROC_NAME];
 
     if (!s_dm || !val || dm_split_path(param_path, object_path,
-                                       sizeof(object_path), &param_name) != 0) {
+                                       sizeof(object_path),
+                                       param_name, sizeof(param_name)) != 0) {
+        syslog(LOG_ERR, "dm_set_param: invalid args for %s",
+               param_path ? param_path : "null");
         return;
     }
 
-    obj = amxd_dm_findf(s_dm, "%s", object_path);
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
     if (!obj) {
-        syslog(LOG_WARNING, "Object not found: %s", object_path);
+        syslog(LOG_ERR, "dm_set_param: object not found: %s", object_path);
         return;
     }
 
-    param = amxd_object_get_param_def(obj, param_name);
-    if (!param) {
-        syslog(LOG_WARNING, "Param not found: %s in %s", param_name, object_path);
-        return;
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_select_object(&trans, obj);
+    amxd_trans_set_param(&trans, param_name, val);
+    amxd_status_t status = amxd_trans_apply(&trans, s_dm);
+    if (status != amxd_status_ok) {
+        syslog(LOG_ERR, "dm_set_param: trans_apply failed for %s status=%d",
+               param_path, status);
     }
-
-    amxd_param_set_value(param, val);
+    amxd_trans_clean(&trans);
 }
 
 static void dm_set_string(const char *param_path, const char *value) {
