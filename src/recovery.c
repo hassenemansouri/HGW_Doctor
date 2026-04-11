@@ -116,15 +116,20 @@ int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdat
 int recovery_dispatch(const AnomalyEvent *event) {
     RecoveryResult result = {0};
 
-    (void) event;
-
-    result.action = s_cfg.action_type;
+    ActionType action;
+    if (event->type == ANOMALY_PROCESS)
+        action = ACTION_PROCESS_RESTART;
+    else if (event->type == ANOMALY_CPU || event->type == ANOMALY_MEMORY)
+        action = (s_cfg.action_type == ACTION_PROCESS_RESTART) ? ACTION_CACHE_CLEAR : s_cfg.action_type;
+    else
+        action = s_cfg.action_type;
+    result.action = action;
     result.result = RESULT_NONE;
     result.exit_code = 0;
     clock_gettime(CLOCK_REALTIME, &result.executed_at);
     copy_string(result.process_name, sizeof(result.process_name), s_cfg.process_name);
 
-    switch (s_cfg.action_type) {
+    switch (action) {
         case ACTION_PROCESS_RESTART:
             result.exit_code = do_process_restart();
             result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
