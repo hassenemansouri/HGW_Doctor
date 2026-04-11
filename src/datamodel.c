@@ -97,10 +97,13 @@ static void dm_set_param(const char *param_path, amxc_var_t *val) {
     amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
     if (!obj) return;
 
-    amxd_param_t *param = amxd_object_get_param_def(obj, param_name);
-    if (!param) return;
-
-    amxd_param_set_value(param, val);
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_object(&trans, obj);
+    amxd_trans_set_param(&trans, param_name, val);
+    amxd_trans_apply(&trans, s_dm);
+    amxd_trans_clean(&trans);
 }
 
 static void dm_set_string(const char *param_path, const char *value) {
