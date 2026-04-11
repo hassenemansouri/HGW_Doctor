@@ -91,28 +91,16 @@ static void dm_set_param(const char *param_path, amxc_var_t *val) {
 
     if (!s_dm || !val || dm_split_path(param_path, object_path,
                                        sizeof(object_path),
-                                       param_name, sizeof(param_name)) != 0) {
-        syslog(LOG_ERR, "dm_set_param: invalid args for %s",
-               param_path ? param_path : "null");
+                                       param_name, sizeof(param_name)) != 0)
         return;
-    }
 
     amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
-    if (!obj) {
-        syslog(LOG_ERR, "dm_set_param: object not found: %s", object_path);
-        return;
-    }
+    if (!obj) return;
 
-    amxd_trans_t trans;
-    amxd_trans_init(&trans);
-    amxd_trans_select_object(&trans, obj);
-    amxd_trans_set_param(&trans, param_name, val);
-    amxd_status_t status = amxd_trans_apply(&trans, s_dm);
-    if (status != amxd_status_ok) {
-        syslog(LOG_ERR, "dm_set_param: trans_apply failed for %s status=%d",
-               param_path, status);
-    }
-    amxd_trans_clean(&trans);
+    amxd_param_t *param = amxd_object_get_param_def(obj, param_name);
+    if (!param) return;
+
+    amxd_param_set_value(param, val);
 }
 
 static void dm_set_string(const char *param_path, const char *value) {
