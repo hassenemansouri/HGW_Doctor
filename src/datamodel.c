@@ -102,7 +102,11 @@ static void dm_set_param(const char *param_path, amxc_var_t *val) {
     amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
     amxd_trans_select_object(&trans, obj);
     amxd_trans_set_param(&trans, param_name, val);
-    amxd_trans_apply(&trans, s_dm);
+    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
+    if (st != amxd_status_ok)
+        syslog(LOG_ERR, "dm_set_param FAILED %s status=%d", param_path, st);
+    else
+        syslog(LOG_DEBUG, "dm_set_param OK %s", param_path);
     amxd_trans_clean(&trans);
 }
 
