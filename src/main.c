@@ -91,13 +91,6 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
                                  "None");
     diag_collect(event);
     recovery_dispatch(event);
-
-    RecoveryResult rr = {0};
-    rr.action = cfg ? cfg->action_type : ACTION_NONE;
-    rr.result = RESULT_IN_PROGRESS;
-    clock_gettime(CLOCK_REALTIME, &rr.executed_at);
-    strncpy(rr.process_name, cfg ? cfg->process_name : "", HGW_MAX_PROC_NAME - 1);
-    datamodel_record_action(&rr);
 }
 
 /* -------------------------------------------------------------------------
