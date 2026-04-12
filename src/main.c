@@ -42,6 +42,7 @@ static amxd_dm_t      g_dm;
 static amxo_parser_t  g_parser;
 static MetricCircBuf  g_metric_buf;
 static amxb_bus_ctx_t *g_bus_ctx = NULL;
+static AnomalyEvent   s_last_event;
 
 static const char *action_type_to_string(ActionType action) {
     switch (action) {
@@ -84,11 +85,9 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
     LOG_WARN("Anomaly detected: type=%d value=%u%% duration=%us",
              event->type, event->metric_value, event->duration_s);
 
-    const HgwConfig *cfg = config_get();
+    s_last_event = *event;
+
     datamodel_increment_anomaly_count();
-    datamodel_append_anomaly_log(event,
-                                 action_type_to_string(cfg ? cfg->action_type : ACTION_NONE),
-                                 "None");
     diag_collect(event);
     recovery_dispatch(event);
 }
@@ -99,6 +98,11 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
 static void on_recovery_done(const RecoveryResult *result, void *userdata) {
     (void)userdata;
     datamodel_record_action(result);
+    datamodel_append_anomaly_log(
+        &s_last_event,
+        action_type_to_string(result->action),
+        result->result == RESULT_SUCCESS ? "Success" : "Failure"
+    );
 }
 
 /* -------------------------------------------------------------------------
