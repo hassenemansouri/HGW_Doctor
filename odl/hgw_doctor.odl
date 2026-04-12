@@ -5,8 +5,6 @@
  * Parsed by libamxo at startup; registered on ubus via the Ambiorix bus backend.
  */
 
-#include "hgw_doctor_prefix.odl";
-
 %config {
     name = "hgw-doctor";
     import-dbg = false;
@@ -21,7 +19,7 @@ import "hgw_doctor.so" as "hgw_doctor";
 
 %define {
 
-    object X_TELNET_HGWDoctor {
+    object HGWDoctor {
 
         /* Global control */
         bool Enable = true;
@@ -37,7 +35,7 @@ import "hgw_doctor.so" as "hgw_doctor";
         /* Recovery */
         /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None" */
         string ActionType = "ProcessRestart";
-        string ProcessName = "";
+        string ProcessList = "";
 
         /* Recovery status (RO, updated after each action) */
         %read-only string LastActionType = "";
@@ -53,7 +51,16 @@ import "hgw_doctor.so" as "hgw_doctor";
         %read-only datetime UploadTimestamp;
 
         /* Live statistics (RO) */
-        object Stats {
+        object Self_Stats {
+            %read-only uint32 CurrentCPUUsage = 0;
+            %read-only uint32 CurrentMemUsage = 0;
+            %read-only uint32 CurrentMemFreeKB = 0;
+            %read-only uint32 TotalRecoveryActions = 0;
+            %read-only uint32 TotalDiagUploads = 0;
+            %read-only uint32 UptimeSeconds = 0;
+        }
+
+        object Stats[] {
             %read-only uint32 CurrentCPUUsage = 0;
             %read-only uint32 CurrentMemUsage = 0;
             %read-only uint32 CurrentMemFreeKB = 0;

@@ -171,24 +171,33 @@ int main(int argc, char *argv[]) {
     }
 
     /* 5. Worker modules */
-    monitor_init(&g_metric_buf, cfg.process_name, cfg.poll_interval_s);
+    monitor_init(&g_metric_buf, cfg.process_names, cfg.process_count,
+                 cfg.poll_interval_s);
 
     AnalyzerConfig acfg = {0};
     acfg.cpu_threshold_pct    = cfg.cpu_threshold_pct;
     acfg.mem_threshold_pct    = cfg.mem_threshold_pct;
     acfg.threshold_duration_s = cfg.threshold_duration_s;
     acfg.poll_interval_s      = cfg.poll_interval_s;
-    __builtin_strncpy(acfg.process_name, cfg.process_name, HGW_MAX_PROC_NAME - 1);
+    acfg.process_count        = cfg.process_count;
+    memcpy(acfg.process_names, cfg.process_names, sizeof(acfg.process_names));
     analyzer_init(&g_metric_buf, &acfg, on_anomaly, NULL);
 
-    datamodel_set_config(cfg.process_name, cfg.cpu_threshold_pct,
+    /* Build comma-separated list for the data model */
+    char proc_list[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME] = {0};
+    for (int i = 0; i < cfg.process_count; i++) {
+        if (i > 0) strncat(proc_list, ",", sizeof(proc_list) - strlen(proc_list) - 1);
+        strncat(proc_list, cfg.process_names[i], sizeof(proc_list) - strlen(proc_list) - 1);
+    }
+    datamodel_set_config(proc_list, cfg.cpu_threshold_pct,
                          cfg.mem_threshold_pct, cfg.threshold_duration_s,
                          cfg.poll_interval_s);
 
     RecoveryConfig rcfg = {0};
-    rcfg.action_type = cfg.action_type;
-    __builtin_strncpy(rcfg.process_name, cfg.process_name, HGW_MAX_PROC_NAME - 1);
-    __builtin_strncpy(rcfg.scripts_dir,  cfg.scripts_dir,  HGW_MAX_PATH - 1);
+    rcfg.action_type   = cfg.action_type;
+    rcfg.process_count = cfg.process_count;
+    memcpy(rcfg.process_names, cfg.process_names, sizeof(rcfg.process_names));
+    __builtin_strncpy(rcfg.scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
     recovery_init(&rcfg, on_recovery_done, NULL);
 
     DiagConfig dcfg = {0};

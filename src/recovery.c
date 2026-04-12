@@ -76,18 +76,18 @@ static int run_action_script(const char *script_name, const char *arg) {
     return run_command(command);
 }
 
-static int do_process_restart(void) {
+static int do_process_restart(const char *proc_name) {
     char command[HGW_MAX_PATH * 4];
     int rc;
 
-    if (s_cfg.process_name[0] == '\0') return -1;
+    if (!proc_name || proc_name[0] == '\0') return -1;
 
-    rc = run_action_script("restart_process.sh", s_cfg.process_name);
+    rc = run_action_script("restart_process.sh", proc_name);
     if (rc == 0) return 0;
 
     snprintf(command, sizeof(command),
              "sh -c \"pkill -HUP -x '%s' >/dev/null 2>&1 || pkill -TERM -x '%s' >/dev/null 2>&1\"",
-             s_cfg.process_name, s_cfg.process_name);
+             proc_name, proc_name);
     return run_command(command);
 }
 
@@ -127,11 +127,19 @@ int recovery_dispatch(const AnomalyEvent *event) {
     result.result = RESULT_NONE;
     result.exit_code = 0;
     clock_gettime(CLOCK_REALTIME, &result.executed_at);
-    copy_string(result.process_name, sizeof(result.process_name), s_cfg.process_name);
+    copy_string(result.process_name, sizeof(result.process_name),
+                (event->dead_proc_name[0] != '\0') ? event->dead_proc_name
+                : (s_cfg.process_count > 0 ? s_cfg.process_names[0] : ""));
+
+    /* For process restart: prefer the specific dead process reported by the event,
+     * fall back to the first configured process name. */
+    const char *restart_target = (event->dead_proc_name[0] != '\0')
+                                 ? event->dead_proc_name
+                                 : (s_cfg.process_count > 0 ? s_cfg.process_names[0] : "");
 
     switch (action) {
         case ACTION_PROCESS_RESTART:
-            result.exit_code = do_process_restart();
+            result.exit_code = do_process_restart(restart_target);
             result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
             break;
         case ACTION_CACHE_CLEAR:

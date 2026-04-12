@@ -1,9 +1,6 @@
 /**
  * @file types.h
  * @brief Shared data structures used across all HGW-Doctor modules.
- *
- * All inter-module communication uses these types.
- * No module should define its own structs for metrics or events.
  */
 
 #ifndef HGW_DOCTOR_TYPES_H
@@ -18,6 +15,7 @@
  * Constants
  * ------------------------------------------------------------------------- */
 #define HGW_MAX_PROC_NAME       64
+#define HGW_MAX_PROC_LIST       16
 #define HGW_MAX_PATH            256
 #define HGW_MAX_URL             512
 #define HGW_MAX_STATUS_STR      32
@@ -33,8 +31,9 @@ typedef struct {
     uint32_t        mem_used_pct; /**< Memory usage 0-100                    */
     uint32_t        mem_free_kb;  /**< Free memory in kB                     */
     uint32_t        mem_total_kb; /**< Total memory in kB                    */
-    bool            proc_alive;   /**< true if monitored process is running  */
-    pid_t           proc_pid;     /**< PID of monitored process (0 if none)  */
+    bool            proc_alive;                    /**< true if ALL monitored processes are running */
+    pid_t           proc_pid;                     /**< PID of first dead process (0 if all alive)  */
+    char            dead_proc_name[HGW_MAX_PROC_NAME]; /**< name of first dead process, or ""      */
 } MetricSnapshot;
 
 typedef struct {
@@ -58,9 +57,10 @@ typedef enum {
  * ------------------------------------------------------------------------- */
 typedef struct {
     AnomalyType  type;
-    uint32_t     metric_value;    /**< Observed value at detection time      */
-    uint32_t     duration_s;      /**< How long threshold was exceeded (s)   */
-    struct timespec detected_at;  /**< Wall-clock time of detection          */
+    uint32_t     metric_value;                    /**< Observed value at detection time      */
+    uint32_t     duration_s;                      /**< How long threshold was exceeded (s)   */
+    struct timespec detected_at;                  /**< Wall-clock time of detection          */
+    char         dead_proc_name[HGW_MAX_PROC_NAME]; /**< name of dead process (ANOMALY_PROCESS) */
 } AnomalyEvent;
 
 /* -------------------------------------------------------------------------

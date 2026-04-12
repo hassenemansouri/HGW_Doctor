@@ -17,7 +17,7 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path);
 void datamodel_cleanup(amxd_dm_t *dm, amxo_parser_t *parser);
 
 void datamodel_set_status(const char *status_str);
-void datamodel_set_config(const char *process_name, uint32_t cpu_threshold,
+void datamodel_set_config(const char *process_list, uint32_t cpu_threshold,
                           uint32_t mem_threshold, uint32_t threshold_duration,
                           uint32_t poll_interval);
 void datamodel_update_stats(uint32_t cpu_pct, uint32_t mem_pct,

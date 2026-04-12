@@ -25,7 +25,7 @@
 
 /* ── Recovery config ─────────────────────────────────────────────────────── */
 #define TR181_ACTION_TYPE         TR181_ROOT ".ActionType"
-#define TR181_PROCESS_NAME        TR181_ROOT ".ProcessName"
+#define TR181_PROCESS_LIST        TR181_ROOT ".ProcessList"
 
 /* ── Recovery status (RO) ────────────────────────────────────────────────── */
 #define TR181_LAST_ACTION_TYPE    TR181_ROOT ".LastActionType"

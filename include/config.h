@@ -20,7 +20,8 @@ typedef struct {
 
     /* Recovery */
     ActionType action_type;
-    char       process_name[HGW_MAX_PROC_NAME];
+    char       process_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
+    int        process_count;
     char       scripts_dir[HGW_MAX_PATH];
 
     /* Diagnostics */

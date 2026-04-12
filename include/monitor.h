@@ -6,7 +6,9 @@
 
 #include "types.h"
 
-int monitor_init(MetricCircBuf *buf, const char *proc_name, uint32_t interval_s);
+int monitor_init(MetricCircBuf *buf,
+                 const char (*proc_names)[HGW_MAX_PROC_NAME], int proc_count,
+                 uint32_t interval_s);
 int monitor_start(void);
 void monitor_stop(void);
 bool monitor_peek_latest(MetricSnapshot *out);

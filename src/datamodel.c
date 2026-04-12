@@ -177,21 +177,21 @@ void datamodel_set_status(const char *status_str) {
     syslog(LOG_INFO, "Status -> %s", status_str);
 }
 
-void datamodel_set_config(const char *process_name, uint32_t cpu_threshold,
+void datamodel_set_config(const char *process_list, uint32_t cpu_threshold,
                           uint32_t mem_threshold, uint32_t threshold_duration,
                           uint32_t poll_interval) {
     if (!s_dm) {
         syslog(LOG_ERR, "datamodel_set_config: s_dm is NULL");
         return;
     }
-    syslog(LOG_INFO, "datamodel_set_config: process_name='%s' cpu=%u mem=%u dur=%u poll=%u",
-           process_name ? process_name : "(null)",
+    syslog(LOG_INFO, "datamodel_set_config: process_list='%s' cpu=%u mem=%u dur=%u poll=%u",
+           process_list ? process_list : "(null)",
            cpu_threshold, mem_threshold, threshold_duration, poll_interval);
 
-    if (process_name && process_name[0] != '\0') {
+    if (process_list && process_list[0] != '\0') {
         amxd_object_t *obj = amxd_dm_findf(s_dm, "X_TELNET_HGWDoctor.");
         syslog(LOG_INFO, "datamodel_set_config: obj=%p", (void*)obj);
-        dm_set_string(TR181_PROCESS_NAME, process_name);
+        dm_set_string(TR181_PROCESS_LIST, process_list);
     }
     dm_set_uint32(TR181_CPU_THRESHOLD, cpu_threshold);
     dm_set_uint32(TR181_MEM_THRESHOLD, mem_threshold);

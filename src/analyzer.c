@@ -142,7 +142,7 @@ static void *analyzer_thread(void *arg) {
         }
 
         /* Check process (if monitoring enabled) */
-        if (s_cfg.process_name[0] != '\0') {
+        if (s_cfg.process_count > 0) {
             if (!snap.proc_alive) {
                 if (!proc_alert_active &&
                     sustained_dead(s_history.proc, s_history.count, required_samples)) {
@@ -151,6 +151,8 @@ static void *analyzer_thread(void *arg) {
                         .metric_value = 0,
                         .duration_s = s_cfg.threshold_duration_s
                     };
+                    strncpy(ev.dead_proc_name, snap.dead_proc_name,
+                            HGW_MAX_PROC_NAME - 1);
                     clock_gettime(CLOCK_REALTIME, &ev.detected_at);
                     if (s_callback) s_callback(&ev, s_userdata);
                     proc_alert_active = 1;

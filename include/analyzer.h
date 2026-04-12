@@ -10,7 +10,8 @@ typedef struct {
     uint32_t mem_threshold_pct;
     uint32_t threshold_duration_s;
     uint32_t poll_interval_s;
-    char     process_name[HGW_MAX_PROC_NAME];
+    char     process_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
+    int      process_count;
 } AnalyzerConfig;
 
 typedef void (*anomaly_callback)(const AnomalyEvent *event, void *userdata);

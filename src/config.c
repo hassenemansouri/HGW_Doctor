@@ -61,7 +61,19 @@ static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) 
     else if (strcasecmp(key, "ThresholdDuration") == 0) cfg->threshold_duration_s = (uint32_t) strtoul(value, NULL, 10);
     else if (strcasecmp(key, "PollInterval") == 0) cfg->poll_interval_s = (uint32_t) strtoul(value, NULL, 10);
     else if (strcasecmp(key, "ActionType") == 0) cfg->action_type = parse_action_type(value);
-    else if (strcasecmp(key, "ProcessName") == 0) strncpy(cfg->process_name, value, sizeof(cfg->process_name) - 1);
+    else if (strcasecmp(key, "ProcessList") == 0) {
+        char tmp[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME];
+        strncpy(tmp, value, sizeof(tmp) - 1);
+        tmp[sizeof(tmp) - 1] = '\0';
+        char *token = strtok(tmp, ",");
+        cfg->process_count = 0;
+        while (token && cfg->process_count < HGW_MAX_PROC_LIST) {
+            strncpy(cfg->process_names[cfg->process_count], token, HGW_MAX_PROC_NAME - 1);
+            cfg->process_names[cfg->process_count][HGW_MAX_PROC_NAME - 1] = '\0';
+            cfg->process_count++;
+            token = strtok(NULL, ",");
+        }
+    }
     else if (strcasecmp(key, "ScriptsDir") == 0) strncpy(cfg->scripts_dir, value, sizeof(cfg->scripts_dir) - 1);
     else if (strcasecmp(key, "DiagOutputDir") == 0) strncpy(cfg->diag_output_dir, value, sizeof(cfg->diag_output_dir) - 1);
     else if (strcasecmp(key, "DiagMaxArchives") == 0) cfg->diag_max_archives = (uint32_t) strtoul(value, NULL, 10);

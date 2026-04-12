@@ -1,13 +1,6 @@
 /**
  * @file monitor.c
- * @brief System health metrics collection.
- *
- * Spawns a POSIX thread that:
- *  1. Reads /proc/stat to compute CPU usage delta between two samples.
- *  2. Reads /proc/meminfo to get MemTotal, MemFree, MemAvailable.
- *  3. Checks whether the configured process is alive via /proc/<pid>/status
- *     (or scans /proc for the process name if PID is unknown).
- *  4. Pushes a MetricSnapshot into the shared circular buffer.
+ * @brief Periodic collection of CPU, memory and process liveness metrics.
  */
 
 #include <stdio.h>
@@ -25,7 +18,8 @@
  * Internal state
  * ------------------------------------------------------------------------- */
 static MetricCircBuf  *s_buf         = NULL;
-static char            s_proc_name[HGW_MAX_PROC_NAME] = {0};
+static char            s_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
+static int             s_proc_count  = 0;
 static uint32_t        s_interval_s  = 5;
 static pthread_t       s_thread;
 static volatile int    s_stop        = 0;
@@ -146,9 +140,22 @@ static void *monitor_thread(void *arg) {
         MetricSnapshot snap = {0};
         clock_gettime(CLOCK_MONOTONIC, &snap.ts);
 
-        snap.cpu_pct      = compute_cpu_pct();
+        snap.cpu_pct    = compute_cpu_pct();
         read_mem_stats(&snap.mem_total_kb, &snap.mem_free_kb, &snap.mem_used_pct);
-        snap.proc_alive   = proc_is_alive(s_proc_name, &snap.proc_pid);
+
+        snap.proc_alive = true;
+        snap.proc_pid   = 0;
+        snap.dead_proc_name[0] = '\0';
+        for (int pi = 0; pi < s_proc_count; pi++) {
+            pid_t pid = 0;
+            if (!proc_is_alive(s_proc_names[pi], &pid)) {
+                snap.proc_alive = false;
+                snap.proc_pid   = pid;
+                strncpy(snap.dead_proc_name, s_proc_names[pi],
+                        HGW_MAX_PROC_NAME - 1);
+                break; /* report first dead process */
+            }
+        }
 
         /* Push to circular buffer (overwrite oldest if full) */
         s_buf->slots[s_buf->head] = snap;
@@ -167,15 +174,19 @@ static void *monitor_thread(void *arg) {
 /* -------------------------------------------------------------------------
  * Public API
  * ------------------------------------------------------------------------- */
-int monitor_init(MetricCircBuf *buf, const char *proc_name, uint32_t interval_s) {
+int monitor_init(MetricCircBuf *buf,
+                 const char (*proc_names)[HGW_MAX_PROC_NAME], int proc_count,
+                 uint32_t interval_s) {
     s_buf        = buf;
     s_interval_s = (interval_s > 0) ? interval_s : 5;
     s_stop       = 0;
     s_count      = 0;
     memset(buf, 0, sizeof(*buf));
+    memset(s_proc_names, 0, sizeof(s_proc_names));
 
-    if (proc_name)
-        strncpy(s_proc_name, proc_name, sizeof(s_proc_name) - 1);
+    s_proc_count = (proc_count > HGW_MAX_PROC_LIST) ? HGW_MAX_PROC_LIST : proc_count;
+    for (int i = 0; i < s_proc_count; i++)
+        strncpy(s_proc_names[i], proc_names[i], HGW_MAX_PROC_NAME - 1);
 
     return 0;
 }
