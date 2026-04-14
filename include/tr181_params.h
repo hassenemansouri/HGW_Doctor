@@ -10,7 +10,7 @@
 #define HGW_TR181_PARAMS_H
 
 /* Root object path */
-#define TR181_ROOT          "X_TELNET_HGWDoctor"
+#define TR181_ROOT          "HGWDoctor"
 
 /* ── Global control ──────────────────────────────────────────────────────── */
 #define TR181_ENABLE              TR181_ROOT ".Enable"

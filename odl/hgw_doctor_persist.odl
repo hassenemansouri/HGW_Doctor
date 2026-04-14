@@ -19,7 +19,7 @@
 
 %populate {
 
-    object X_TELNET_HGWDoctor {
+    object HGWDoctor {
 
         /* Operator-configured values (written by ACS or CLI) */
         parameter Enable             = true;

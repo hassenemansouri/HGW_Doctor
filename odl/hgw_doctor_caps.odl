@@ -18,7 +18,7 @@
      * ACS accesses it as:  Device.X_TELNET_HGWDoctor.
      * Internal bus clients use: X_TELNET_HGWDoctor.
      * --------------------------------------------------------------------- */
-    ubus-path    = "X_TELNET_HGWDoctor";
+    ubus-path    = "HGWDoctor";
     register-name = "hgw-doctor";
 
     /* -----------------------------------------------------------------------

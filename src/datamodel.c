@@ -189,7 +189,7 @@ void datamodel_set_config(const char *process_list, uint32_t cpu_threshold,
            cpu_threshold, mem_threshold, threshold_duration, poll_interval);
 
     if (process_list && process_list[0] != '\0') {
-        amxd_object_t *obj = amxd_dm_findf(s_dm, "X_TELNET_HGWDoctor.");
+        amxd_object_t *obj = amxd_dm_findf(s_dm, "HGWDoctor.");
         syslog(LOG_INFO, "datamodel_set_config: obj=%p", (void*)obj);
         dm_set_string(TR181_PROCESS_LIST, process_list);
     }
@@ -334,7 +334,7 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
 }
 
 /* -------------------------------------------------------------------------
- * Event handler: fires when any parameter under X_TELNET_HGWDoctor.* changes
+ * Event handler: fires when any parameter under HGWDoctor.* changes
  * Propagates ACS-written values back into the live config of each module.
  * ------------------------------------------------------------------------- */
 amxd_status_t dm_on_param_changed(amxd_object_t *obj, amxd_function_t *fn,
