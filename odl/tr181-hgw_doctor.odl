@@ -1,0 +1,99 @@
+/*
+ * hgw_doctor.odl
+ *
+ * TR-181 data model for HGW-Doctor: Device.X_TELNET_HGWDoctor.
+ * Parsed by libamxo at startup; registered on ubus via the Ambiorix bus backend.
+ */
+
+%config {
+    name = "hgw-doctor";
+    import-dbg = false;
+    auto-resolver-order = [ "ftab", "auto" ];
+
+    /* persistent state is saved here on daemon stop */
+    odl-save-path    = "/etc/amx/hgw_doctor/";
+    odl-save-on-stop = true;
+}
+
+import "hgw_doctor.so" as "hgw_doctor";
+
+%define {
+
+    object Device.X_TELNET_HGWDoctor {
+
+        /* Global control */
+        bool Enable = true;
+        %read-only string Status = "Disabled";   /* "Enabled" | "Disabled" | "Error" */
+        string Profile = "default";
+
+        /* Monitoring thresholds */
+        uint32 CPUThreshold = 90;       /* % above which anomaly is declared */
+        uint32 MemThreshold = 90;
+        uint32 ThresholdDuration = 60;  /* consecutive seconds threshold must hold */
+        uint32 PollInterval = 5;        /* seconds between metric samples */
+
+        /* Recovery */
+        /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None" */
+        string ActionType = "ProcessRestart";
+        string ProcessName = "";
+
+        /* Recovery status (RO, updated after each action) */
+        %read-only string LastActionType = "";
+        %read-only datetime LastActionTime;
+        %read-only string LastActionStatus = "None";
+        %read-only uint32 AnomalyCount = 0;
+
+        /* Diagnostics & upload */
+        bool OnDemandTrigger = false;   /* write true to trigger on-demand collection */
+        %read-only string DiagArchivePath = "";
+        string UploadURL = "";
+        %read-only string UploadStatus = "None";
+        %read-only datetime UploadTimestamp;
+
+        /* Live statistics (RO) */
+        object Self_Stats {
+            %read-only uint32 CurrentCPUUsage = 0;
+            %read-only uint32 CurrentMemUsage = 0;
+            %read-only uint32 CurrentMemFreeKB = 0;
+            %read-only uint32 TotalRecoveryActions = 0;
+            %read-only uint32 TotalDiagUploads = 0;
+            %read-only uint32 UptimeSeconds = 0;
+        }
+
+        object Stats[] {
+            %read-only uint32 CurrentCPUUsage = 0;
+            %read-only uint32 CurrentMemUsage = 0;
+            %read-only uint32 CurrentMemFreeKB = 0;
+            %read-only uint32 TotalRecoveryActions = 0;
+            %read-only uint32 TotalDiagUploads = 0;
+            %read-only uint32 UptimeSeconds = 0;
+        }
+
+        /* Monitoring profiles — path: X_TELNET_HGWDoctor.Profiles.{i}. */
+        object Profiles[] {
+            %key string Name;
+            uint32 CPUThreshold = 90;
+            uint32 MemThreshold = 90;
+            uint32 ThresholdDuration = 60;
+            string ActionType = "ProcessRestart";
+            uint32 PollInterval = 5;
+            string Description = "";
+        }
+
+        /* Anomaly event log — path: X_TELNET_HGWDoctor.AnomalyLog.{i}. */
+        object AnomalyLog[] {
+            %read-only datetime Timestamp;
+            %read-only string AnomalyType = "";   /* "CPU" | "Memory" | "Process" */
+            %read-only uint32 MetricValue = 0;
+            %read-only string ActionTaken = "";
+            %read-only string ActionResult = "";
+        }
+
+        /* RPC methods */
+        uint32 TriggerDiagnostics() <!import:hgw_doctor:dm_trigger_diagnostics!>;
+        void ResetCounters() <!import:hgw_doctor:dm_reset_counters!>;
+        int32 SetProfile(%in string ProfileName) <!import:hgw_doctor:dm_set_profile!>;
+    }
+}
+
+#include "hgw_doctor_defaults.odl";
