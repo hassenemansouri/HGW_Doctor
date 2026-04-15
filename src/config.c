@@ -68,9 +68,16 @@ static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) 
         char *token = strtok(tmp, ",");
         cfg->process_count = 0;
         while (token && cfg->process_count < HGW_MAX_PROC_LIST) {
-            strncpy(cfg->process_names[cfg->process_count], token, HGW_MAX_PROC_NAME - 1);
-            cfg->process_names[cfg->process_count][HGW_MAX_PROC_NAME - 1] = '\0';
-            cfg->process_count++;
+            char *trimmed = token;
+            while (*trimmed == ' ') trimmed++;
+            char *end = trimmed + strlen(trimmed);
+            while (end > trimmed && *(end - 1) == ' ') end--;
+            *end = '\0';
+            if (*trimmed != '\0') {
+                strncpy(cfg->process_names[cfg->process_count], trimmed, HGW_MAX_PROC_NAME - 1);
+                cfg->process_names[cfg->process_count][HGW_MAX_PROC_NAME - 1] = '\0';
+                cfg->process_count++;
+            }
             token = strtok(NULL, ",");
         }
     }

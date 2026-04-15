@@ -117,7 +117,9 @@ int recovery_dispatch(const AnomalyEvent *event) {
     RecoveryResult result = {0};
 
     ActionType action;
-    if (event->type == ANOMALY_PROCESS)
+    if (event->type == ANOMALY_PROCESS ||
+        event->type == ANOMALY_PROCESS_CPU ||
+        event->type == ANOMALY_PROCESS_MEM)
         action = ACTION_PROCESS_RESTART;
     else if (event->type == ANOMALY_CPU || event->type == ANOMALY_MEMORY)
         action = (s_cfg.action_type == ACTION_PROCESS_RESTART) ? ACTION_CACHE_CLEAR : s_cfg.action_type;
@@ -128,13 +130,13 @@ int recovery_dispatch(const AnomalyEvent *event) {
     result.exit_code = 0;
     clock_gettime(CLOCK_REALTIME, &result.executed_at);
     copy_string(result.process_name, sizeof(result.process_name),
-                (event->dead_proc_name[0] != '\0') ? event->dead_proc_name
+                (event->process_name[0] != '\0') ? event->process_name
                 : (s_cfg.process_count > 0 ? s_cfg.process_names[0] : ""));
 
-    /* For process restart: prefer the specific dead process reported by the event,
+    /* For process restart: prefer the specific process reported by the event,
      * fall back to the first configured process name. */
-    const char *restart_target = (event->dead_proc_name[0] != '\0')
-                                 ? event->dead_proc_name
+    const char *restart_target = (event->process_name[0] != '\0')
+                                 ? event->process_name
                                  : (s_cfg.process_count > 0 ? s_cfg.process_names[0] : "");
 
     switch (action) {

@@ -23,17 +23,27 @@
 #define HGW_ANOMALY_LOG_MAX     50    /**< max AnomalyLog entries in data model */
 
 /* -------------------------------------------------------------------------
+ * Per-process metrics snapshot
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    char     name[HGW_MAX_PROC_NAME];
+    pid_t    pid;
+    bool     alive;
+    uint32_t cpu_pct;
+    uint32_t mem_pct;
+} ProcessStat;
+
+/* -------------------------------------------------------------------------
  * Metric snapshot - produced by monitor.c, consumed by analyzer.c
  * ------------------------------------------------------------------------- */
 typedef struct {
-    struct timespec ts;           /**< Monotonic timestamp of sample         */
-    uint32_t        cpu_pct;      /**< CPU usage 0-100                       */
-    uint32_t        mem_used_pct; /**< Memory usage 0-100                    */
-    uint32_t        mem_free_kb;  /**< Free memory in kB                     */
-    uint32_t        mem_total_kb; /**< Total memory in kB                    */
-    bool            proc_alive;                    /**< true if ALL monitored processes are running */
-    pid_t           proc_pid;                     /**< PID of first dead process (0 if all alive)  */
-    char            dead_proc_name[HGW_MAX_PROC_NAME]; /**< name of first dead process, or ""      */
+    struct timespec ts;
+    uint32_t        sys_cpu_pct;
+    uint32_t        sys_mem_pct;
+    uint32_t        sys_mem_free_kb;
+    uint32_t        sys_mem_total_kb;
+    ProcessStat     procs[HGW_MAX_PROC_LIST];
+    int             proc_count;
 } MetricSnapshot;
 
 typedef struct {
@@ -46,10 +56,12 @@ typedef struct {
  * Anomaly types
  * ------------------------------------------------------------------------- */
 typedef enum {
-    ANOMALY_NONE    = 0,
-    ANOMALY_CPU     = 1,
-    ANOMALY_MEMORY  = 2,
-    ANOMALY_PROCESS = 3,
+    ANOMALY_NONE        = 0,
+    ANOMALY_CPU         = 1,
+    ANOMALY_MEMORY      = 2,
+    ANOMALY_PROCESS     = 3,
+    ANOMALY_PROCESS_CPU = 4,
+    ANOMALY_PROCESS_MEM = 5,
 } AnomalyType;
 
 /* -------------------------------------------------------------------------
@@ -60,7 +72,7 @@ typedef struct {
     uint32_t     metric_value;                    /**< Observed value at detection time      */
     uint32_t     duration_s;                      /**< How long threshold was exceeded (s)   */
     struct timespec detected_at;                  /**< Wall-clock time of detection          */
-    char         dead_proc_name[HGW_MAX_PROC_NAME]; /**< name of dead process (ANOMALY_PROCESS) */
+    char         process_name[HGW_MAX_PROC_NAME]; /**< process involved (ANOMALY_PROCESS*)   */
 } AnomalyEvent;
 
 /* -------------------------------------------------------------------------

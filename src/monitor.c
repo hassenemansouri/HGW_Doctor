@@ -26,8 +26,12 @@ static volatile int    s_stop        = 0;
 static volatile int    s_count       = 0;  /* total samples written */
 
 /* Previous /proc/stat values for CPU delta calculation */
-static unsigned long long s_prev_total = 0;
-static unsigned long long s_prev_idle  = 0;
+static unsigned long long s_prev_total    = 0;
+static unsigned long long s_prev_idle     = 0;
+static unsigned long long s_last_cpu_delta = 0; /* ticks in last sample period */
+
+/* Previous per-process CPU ticks */
+static unsigned long long s_prev_proc_cpu[HGW_MAX_PROC_LIST];
 
 /* -------------------------------------------------------------------------
  * /proc/stat CPU parsing
@@ -55,9 +59,74 @@ static uint32_t compute_cpu_pct(void) {
     unsigned long long didle  = idle  - s_prev_idle;
     s_prev_total = total;
     s_prev_idle  = idle;
+    s_last_cpu_delta = dtotal;
 
     if (dtotal == 0) return 0;
     return (uint32_t)(100ULL * (dtotal - didle) / dtotal);
+}
+
+/* -------------------------------------------------------------------------
+ * Per-process CPU % from /proc/<pid>/stat
+ * ------------------------------------------------------------------------- */
+static uint32_t proc_cpu_pct(int proc_idx, pid_t pid) {
+    if (pid <= 0 || s_last_cpu_delta == 0) return 0;
+
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    char buf[512];
+    bool ok = (fgets(buf, sizeof(buf), f) != NULL);
+    fclose(f);
+    if (!ok) return 0;
+
+    /* Skip past the closing ')' of the comm field (may contain spaces) */
+    char *p = strrchr(buf, ')');
+    if (!p) return 0;
+    p++;
+
+    char state;
+    int ppid, pgrp, session, tty, tpgid;
+    unsigned int flags;
+    unsigned long long minflt, cminflt, majflt, cmajflt, utime, stime;
+
+    int rc = sscanf(p, " %c %d %d %d %d %d %u %llu %llu %llu %llu %llu %llu",
+                    &state, &ppid, &pgrp, &session, &tty, &tpgid,
+                    &flags, &minflt, &cminflt, &majflt, &cmajflt,
+                    &utime, &stime);
+    if (rc < 13) return 0;
+
+    unsigned long long cur  = utime + stime;
+    unsigned long long prev = s_prev_proc_cpu[proc_idx];
+    s_prev_proc_cpu[proc_idx] = cur;
+
+    if (prev == 0) return 0; /* first sample: just prime the counter */
+    unsigned long long delta = (cur >= prev) ? (cur - prev) : 0;
+    uint32_t pct = (uint32_t)(100ULL * delta / s_last_cpu_delta);
+    return (pct > 100) ? 100 : pct;
+}
+
+/* -------------------------------------------------------------------------
+ * Per-process memory % from /proc/<pid>/status VmRSS
+ * ------------------------------------------------------------------------- */
+static uint32_t proc_mem_pct(pid_t pid, uint32_t total_mem_kb) {
+    if (pid <= 0 || total_mem_kb == 0) return 0;
+
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/status", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    char line[128];
+    unsigned long vmrss = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "VmRSS: %lu kB", &vmrss) == 1) break;
+    }
+    fclose(f);
+
+    if (vmrss == 0) return 0;
+    return (uint32_t)(100ULL * vmrss / total_mem_kb);
 }
 
 /* -------------------------------------------------------------------------
@@ -132,6 +201,7 @@ static void *monitor_thread(void *arg) {
     unsigned long long t, i;
     read_cpu_stats(&t, &i);
     s_prev_total = t; s_prev_idle = i;
+    memset(s_prev_proc_cpu, 0, sizeof(s_prev_proc_cpu));
 
     while (!s_stop) {
         sleep(s_interval_s);
@@ -140,20 +210,22 @@ static void *monitor_thread(void *arg) {
         MetricSnapshot snap = {0};
         clock_gettime(CLOCK_MONOTONIC, &snap.ts);
 
-        snap.cpu_pct    = compute_cpu_pct();
-        read_mem_stats(&snap.mem_total_kb, &snap.mem_free_kb, &snap.mem_used_pct);
+        snap.sys_cpu_pct = compute_cpu_pct(); /* also updates s_last_cpu_delta */
+        read_mem_stats(&snap.sys_mem_total_kb, &snap.sys_mem_free_kb, &snap.sys_mem_pct);
 
-        snap.proc_alive = true;
-        snap.proc_pid   = 0;
-        snap.dead_proc_name[0] = '\0';
+        snap.proc_count = s_proc_count;
         for (int pi = 0; pi < s_proc_count; pi++) {
+            ProcessStat *ps = &snap.procs[pi];
+            strncpy(ps->name, s_proc_names[pi], HGW_MAX_PROC_NAME - 1);
             pid_t pid = 0;
-            if (!proc_is_alive(s_proc_names[pi], &pid)) {
-                snap.proc_alive = false;
-                snap.proc_pid   = pid;
-                strncpy(snap.dead_proc_name, s_proc_names[pi],
-                        HGW_MAX_PROC_NAME - 1);
-                break; /* report first dead process */
+            ps->alive  = proc_is_alive(s_proc_names[pi], &pid);
+            ps->pid    = pid;
+            if (ps->alive && pid > 0) {
+                ps->cpu_pct = proc_cpu_pct(pi, pid);
+                ps->mem_pct = proc_mem_pct(pid, snap.sys_mem_total_kb);
+            } else {
+                ps->cpu_pct = 0;
+                ps->mem_pct = 0;
             }
         }
 
@@ -162,9 +234,9 @@ static void *monitor_thread(void *arg) {
         s_buf->head = (s_buf->head + 1) % HGW_CIRC_BUF_SIZE;
         s_count++;
 
-        LOG_DEBUG("Sample: cpu=%u%% mem=%u%% free=%ukB proc_alive=%d",
-                  snap.cpu_pct, snap.mem_used_pct,
-                  snap.mem_free_kb, snap.proc_alive);
+        LOG_DEBUG("Sample: cpu=%u%% mem=%u%% free=%ukB procs=%d",
+                  snap.sys_cpu_pct, snap.sys_mem_pct,
+                  snap.sys_mem_free_kb, snap.proc_count);
     }
 
     LOG_INFO("Monitor thread exiting");

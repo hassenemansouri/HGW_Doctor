@@ -234,8 +234,8 @@ int main(int argc, char *argv[]) {
 
         MetricSnapshot snap;
         if (monitor_peek_latest(&snap)) {
-            datamodel_update_stats(snap.cpu_pct, snap.mem_used_pct,
-                                   snap.mem_free_kb);
+            datamodel_update_stats(snap.sys_cpu_pct, snap.sys_mem_pct,
+                                   snap.sys_mem_free_kb);
         }
         uptime_s++;
         datamodel_update_uptime(uptime_s);
