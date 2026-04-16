@@ -24,6 +24,12 @@ define Package/hgw-doctor/description
   collects diagnostics and uploads them. Exposes a TR-181 data model via Ambiorix.
 endef
 
+# Only the runtime config file is a conffile (user-editable).
+# ODL files are package-owned and must be overwritten on upgrade.
+define Package/hgw-doctor/conffiles
+/etc/hgw_doctor/hgw_doctor.conf
+endef
+
 # -----------------------------------------------------------------------
 # Prepare: copy the full source tree into the build directory
 # $(CURDIR) = .../package/hgw-doctor (the openwrt/ dir in your repo)
