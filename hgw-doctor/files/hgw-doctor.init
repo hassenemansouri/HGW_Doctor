@@ -29,6 +29,14 @@ start_service() {
     procd_close_instance
 }
 
+service_started() {
+    # Wait for HGWDoctor. to register on the bus (done by amxrt instance),
+    # then restart tr181-device so it picks up the Device.X_TELNET_HGWDoctor
+    # proxy immediately — avoids the race where tr181-device misses the
+    # registration event on first boot.
+    ( ubus wait_for HGWDoctor 30 && /etc/init.d/tr181-device restart ) &
+}
+
 reload_service() {
     # SIGHUP triggers config reload in the daemon
     kill -HUP "$(pidof hgw-doctor)" 2>/dev/null
