@@ -29,7 +29,7 @@
         parameter ThresholdDuration  = 60;
         parameter PollInterval       = 5;
         parameter ActionType         = "ProcessRestart";
-        parameter ProcessName        = "";
+        parameter ProcessList        = "";
         parameter UploadURL          = "https://diagnostics.telnet.tn/upload";
 
         /* Operator-defined custom profiles are persisted here as well */

@@ -34,9 +34,10 @@
 /* -------------------------------------------------------------------------
  * Globals
  * ------------------------------------------------------------------------- */
-static volatile sig_atomic_t g_running    = 1;
-static volatile sig_atomic_t g_reload_cfg = 0;
-static volatile sig_atomic_t g_diag_req   = 0;  /* set by SIGUSR1 */
+static volatile sig_atomic_t g_running      = 1;
+static volatile sig_atomic_t g_reload_cfg  = 0;
+static volatile sig_atomic_t g_diag_req    = 0;  /* set by SIGUSR1 — manual trigger */
+static volatile sig_atomic_t g_anomaly_diag = 0; /* set by on_anomaly — anomaly trigger */
 
 static amxd_dm_t      g_dm;
 static amxo_parser_t  g_parser;
@@ -88,8 +89,8 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
     s_last_event = *event;
 
     datamodel_increment_anomaly_count();
-    diag_collect(event);
     recovery_dispatch(event);
+    g_anomaly_diag = 1; /* diag collection handled in main loop — keep analyzer thread unblocked */
 }
 
 /* -------------------------------------------------------------------------
@@ -230,6 +231,11 @@ int main(int argc, char *argv[]) {
             g_diag_req = 0;
             LOG_INFO("On-demand diagnostics requested via SIGUSR1");
             diag_collect(NULL);
+        }
+        if (g_anomaly_diag) {
+            g_anomaly_diag = 0;
+            LOG_INFO("Collecting diagnostics after anomaly (type=%d)", s_last_event.type);
+            diag_collect(&s_last_event);
         }
 
         MetricSnapshot snap;

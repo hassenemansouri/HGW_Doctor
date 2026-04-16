@@ -77,11 +77,13 @@ static void dm_format_utc(time_t when, char *buf, size_t len) {
 
 static const char *anomaly_type_to_string(AnomalyType type) {
     switch (type) {
-        case ANOMALY_CPU:     return "CPU";
-        case ANOMALY_MEMORY:  return "Memory";
-        case ANOMALY_PROCESS: return "Process";
+        case ANOMALY_CPU:         return "CPU";
+        case ANOMALY_MEMORY:      return "Memory";
+        case ANOMALY_PROCESS:     return "Process";
+        case ANOMALY_PROCESS_CPU: return "ProcessCPU";
+        case ANOMALY_PROCESS_MEM: return "ProcessMem";
         case ANOMALY_NONE:
-        default:              return "";
+        default:                  return "";
     }
 }
 

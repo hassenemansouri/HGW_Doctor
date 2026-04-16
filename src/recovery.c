@@ -100,6 +100,12 @@ static int do_cache_clear(void) {
 static int do_reboot(void) {
     int rc = run_action_script("reboot_system.sh", NULL);
     if (rc == 0) return 0;
+
+    /* Follow PrplOS pattern: call Device.Reboot() via ubus if available,
+     * fall back to shell reboot otherwise. */
+    rc = run_command("ubus call Device Reboot '{\"Cause\":\"LocalReboot\",\"Reason\":\"HGWDoctor\"}' 2>/dev/null");
+    if (rc == 0) return 0;
+
     if (access("/sbin/reboot", X_OK) == 0) return run_command("/sbin/reboot");
     return run_command("reboot");
 }

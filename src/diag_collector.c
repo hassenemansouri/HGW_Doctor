@@ -114,11 +114,13 @@ static int copy_text_file(const char *src_path, const char *dst_path) {
 
 static const char *event_type_to_string(AnomalyType type) {
     switch (type) {
-        case ANOMALY_CPU:     return "CPU";
-        case ANOMALY_MEMORY:  return "Memory";
-        case ANOMALY_PROCESS: return "Process";
+        case ANOMALY_CPU:         return "CPU";
+        case ANOMALY_MEMORY:      return "Memory";
+        case ANOMALY_PROCESS:     return "Process";
+        case ANOMALY_PROCESS_CPU: return "ProcessCPU";
+        case ANOMALY_PROCESS_MEM: return "ProcessMem";
         case ANOMALY_NONE:
-        default:              return "None";
+        default:                  return "None";
     }
 }
 

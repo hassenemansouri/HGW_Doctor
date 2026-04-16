@@ -22,20 +22,20 @@ import "hgw_doctor.so" as "hgw_doctor";
     object HGWDoctor {
 
         /* Global control */
-        bool Enable = true;
+        %persistent bool Enable = true;
         %read-only string Status = "Disabled";   /* "Enabled" | "Disabled" | "Error" */
-        string Profile = "default";
+        %persistent string Profile = "default";
 
         /* Monitoring thresholds */
-        uint32 CPUThreshold = 90;       /* % above which anomaly is declared */
-        uint32 MemThreshold = 90;
-        uint32 ThresholdDuration = 60;  /* consecutive seconds threshold must hold */
-        uint32 PollInterval = 5;        /* seconds between metric samples */
+        %persistent uint32 CPUThreshold = 90;       /* % above which anomaly is declared */
+        %persistent uint32 MemThreshold = 90;
+        %persistent uint32 ThresholdDuration = 60;  /* consecutive seconds threshold must hold */
+        %persistent uint32 PollInterval = 5;        /* seconds between metric samples */
 
         /* Recovery */
         /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None" */
-        string ActionType = "ProcessRestart";
-        string ProcessList = "";
+        %persistent string ActionType = "ProcessRestart";
+        %persistent string ProcessList = "";
 
         /* Recovery status (RO, updated after each action) */
         %read-only string LastActionType = "";
@@ -46,21 +46,12 @@ import "hgw_doctor.so" as "hgw_doctor";
         /* Diagnostics & upload */
         bool OnDemandTrigger = false;   /* write true to trigger on-demand collection */
         %read-only string DiagArchivePath = "";
-        string UploadURL = "";
+        %persistent string UploadURL = "";
         %read-only string UploadStatus = "None";
         %read-only datetime UploadTimestamp;
 
         /* Live statistics (RO) */
-        object Self_Stats {
-            %read-only uint32 CurrentCPUUsage = 0;
-            %read-only uint32 CurrentMemUsage = 0;
-            %read-only uint32 CurrentMemFreeKB = 0;
-            %read-only uint32 TotalRecoveryActions = 0;
-            %read-only uint32 TotalDiagUploads = 0;
-            %read-only uint32 UptimeSeconds = 0;
-        }
-
-        object Stats[] {
+        object Stats {
             %read-only uint32 CurrentCPUUsage = 0;
             %read-only uint32 CurrentMemUsage = 0;
             %read-only uint32 CurrentMemFreeKB = 0;
@@ -96,4 +87,5 @@ import "hgw_doctor.so" as "hgw_doctor";
     }
 }
 
+#include "hgw_doctor_caps.odl";
 #include "hgw_doctor_defaults.odl";

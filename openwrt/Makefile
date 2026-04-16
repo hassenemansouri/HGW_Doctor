@@ -31,12 +31,13 @@ endef
 # -----------------------------------------------------------------------
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) $(TOPDIR)/feeds/hgw_doctor/src         $(PKG_BUILD_DIR)/src
-	$(CP) $(TOPDIR)/feeds/hgw_doctor/include     $(PKG_BUILD_DIR)/include
-	$(CP) $(TOPDIR)/feeds/hgw_doctor/odl         $(PKG_BUILD_DIR)/odl
-	$(CP) $(TOPDIR)/feeds/hgw_doctor/conf        $(PKG_BUILD_DIR)/conf
-	$(CP) $(TOPDIR)/feeds/hgw_doctor/actions     $(PKG_BUILD_DIR)/actions
-	$(CP) $(TOPDIR)/feeds/hgw_doctor/Makefile    $(PKG_BUILD_DIR)/Makefile
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/src          $(PKG_BUILD_DIR)/src
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/include      $(PKG_BUILD_DIR)/include
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/odl          $(PKG_BUILD_DIR)/odl
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/conf         $(PKG_BUILD_DIR)/conf
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/actions      $(PKG_BUILD_DIR)/actions
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/openwrt      $(PKG_BUILD_DIR)/openwrt
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/Makefile     $(PKG_BUILD_DIR)/Makefile
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/makefile.inc $(PKG_BUILD_DIR)/makefile.inc
 	rm -rf $(PKG_BUILD_DIR)/build
 endef
@@ -81,9 +82,9 @@ define Package/hgw-doctor/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/actions/restart_process.sh  $(1)/usr/lib/hgw_doctor/actions/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/actions/clear_cache.sh      $(1)/usr/lib/hgw_doctor/actions/
 
-	# TR-181 device proxy mapping
+	# TR-181 device proxy mapping (loaded automatically by amxrt from extensions/)
 	$(INSTALL_DIR) $(1)/etc/amx/tr181-device/extensions
-	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/01_device-hgw_doctor_mapping.odl \
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/openwrt/files/01_device-hgw_doctor_mapping.odl \
 		$(1)/etc/amx/tr181-device/extensions/
 
 	# procd init script
