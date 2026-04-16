@@ -14,9 +14,9 @@
 
     /* -----------------------------------------------------------------------
      * Bus registration
-     * The data model is registered under this root path on ubus/PCB.
-     * ACS accesses it as:  Device.X_TELNET_HGWDoctor.
-     * Internal bus clients use: X_TELNET_HGWDoctor.
+     * The data model is registered as HGWDoctor on ubus/PCB.
+     * ACS accesses it as Device.X_TELNET_HGWDoctor via the tr181-device
+     * proxy mapping in 01_device-hgw_doctor_mapping.odl.
      * --------------------------------------------------------------------- */
     ubus-path    = "HGWDoctor";
     register-name = "hgw-doctor";

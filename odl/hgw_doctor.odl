@@ -1,7 +1,7 @@
 /*
  * hgw_doctor.odl
  *
- * TR-181 data model for HGW-Doctor: Device.X_TELNET_HGWDoctor.
+ * TR-181 data model for HGW-Doctor: HGWDoctor (ubus), Device.X_TELNET_HGWDoctor (TR-181 proxy).
  * Parsed by libamxo at startup; registered on ubus via the Ambiorix bus backend.
  */
 
@@ -60,7 +60,7 @@ import "hgw_doctor.so" as "hgw_doctor";
             %read-only uint32 UptimeSeconds = 0;
         }
 
-        /* Monitoring profiles — path: X_TELNET_HGWDoctor.Profiles.{i}. */
+        /* Monitoring profiles — path: HGWDoctor.Profiles.{i}. */
         object Profiles[] {
             %key string Name;
             uint32 CPUThreshold = 90;
@@ -71,7 +71,7 @@ import "hgw_doctor.so" as "hgw_doctor";
             string Description = "";
         }
 
-        /* Anomaly event log — path: X_TELNET_HGWDoctor.AnomalyLog.{i}. */
+        /* Anomaly event log — path: HGWDoctor.AnomalyLog.{i}. */
         object AnomalyLog[] {
             %read-only datetime Timestamp;
             %read-only string AnomalyType = "";   /* "CPU" | "Memory" | "Process" */
