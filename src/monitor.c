@@ -17,13 +17,16 @@
 /* -------------------------------------------------------------------------
  * Internal state
  * ------------------------------------------------------------------------- */
-static MetricCircBuf  *s_buf         = NULL;
-static char            s_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
-static int             s_proc_count  = 0;
-static uint32_t        s_interval_s  = 5;
-static pthread_t       s_thread;
-static volatile int    s_stop        = 0;
-static volatile int    s_count       = 0;  /* total samples written */
+static MetricCircBuf   *s_buf         = NULL;
+static char             s_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
+static int              s_proc_count  = 0;
+static uint32_t         s_interval_s  = 5;
+static pthread_t        s_thread;
+static volatile int     s_stop        = 0;
+static volatile int     s_count       = 0;  /* total samples written */
+
+/* Protects s_proc_names, s_proc_count, s_interval_s against monitor_update_config() */
+static pthread_mutex_t  s_cfg_mutex   = PTHREAD_MUTEX_INITIALIZER;
 
 /* Previous /proc/stat values for CPU delta calculation */
 static unsigned long long s_prev_total    = 0;
@@ -204,7 +207,15 @@ static void *monitor_thread(void *arg) {
     memset(s_prev_proc_cpu, 0, sizeof(s_prev_proc_cpu));
 
     while (!s_stop) {
-        sleep(s_interval_s);
+        /* Take a local copy of config so monitor_update_config() can run safely */
+        pthread_mutex_lock(&s_cfg_mutex);
+        uint32_t interval = s_interval_s;
+        int      proc_count = s_proc_count;
+        char     proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
+        memcpy(proc_names, s_proc_names, sizeof(proc_names));
+        pthread_mutex_unlock(&s_cfg_mutex);
+
+        sleep(interval);
         if (s_stop) break;
 
         MetricSnapshot snap = {0};
@@ -213,12 +224,12 @@ static void *monitor_thread(void *arg) {
         snap.sys_cpu_pct = compute_cpu_pct(); /* also updates s_last_cpu_delta */
         read_mem_stats(&snap.sys_mem_total_kb, &snap.sys_mem_free_kb, &snap.sys_mem_pct);
 
-        snap.proc_count = s_proc_count;
-        for (int pi = 0; pi < s_proc_count; pi++) {
+        snap.proc_count = proc_count;
+        for (int pi = 0; pi < proc_count; pi++) {
             ProcessStat *ps = &snap.procs[pi];
-            strncpy(ps->name, s_proc_names[pi], HGW_MAX_PROC_NAME - 1);
+            strncpy(ps->name, proc_names[pi], HGW_MAX_PROC_NAME - 1);
             pid_t pid = 0;
-            ps->alive  = proc_is_alive(s_proc_names[pi], &pid);
+            ps->alive  = proc_is_alive(proc_names[pi], &pid);
             ps->pid    = pid;
             if (ps->alive && pid > 0) {
                 ps->cpu_pct = proc_cpu_pct(pi, pid);
@@ -230,9 +241,11 @@ static void *monitor_thread(void *arg) {
         }
 
         /* Push to circular buffer (overwrite oldest if full) */
+        pthread_mutex_lock(&s_buf->buf_mutex);
         s_buf->slots[s_buf->head] = snap;
         s_buf->head = (s_buf->head + 1) % HGW_CIRC_BUF_SIZE;
         s_count++;
+        pthread_mutex_unlock(&s_buf->buf_mutex);
 
         LOG_DEBUG("Sample: cpu=%u%% mem=%u%% free=%ukB procs=%d",
                   snap.sys_cpu_pct, snap.sys_mem_pct,
@@ -250,15 +263,18 @@ int monitor_init(MetricCircBuf *buf,
                  const char (*proc_names)[HGW_MAX_PROC_NAME], int proc_count,
                  uint32_t interval_s) {
     s_buf        = buf;
-    s_interval_s = (interval_s > 0) ? interval_s : 5;
     s_stop       = 0;
     s_count      = 0;
     memset(buf, 0, sizeof(*buf));
-    memset(s_proc_names, 0, sizeof(s_proc_names));
+    pthread_mutex_init(&buf->buf_mutex, NULL);  /* must come after memset */
 
+    pthread_mutex_lock(&s_cfg_mutex);
+    s_interval_s = (interval_s > 0) ? interval_s : 5;
+    memset(s_proc_names, 0, sizeof(s_proc_names));
     s_proc_count = (proc_count > HGW_MAX_PROC_LIST) ? HGW_MAX_PROC_LIST : proc_count;
     for (int i = 0; i < s_proc_count; i++)
         strncpy(s_proc_names[i], proc_names[i], HGW_MAX_PROC_NAME - 1);
+    pthread_mutex_unlock(&s_cfg_mutex);
 
     return 0;
 }
@@ -270,11 +286,25 @@ int monitor_start(void) {
 void monitor_stop(void) {
     s_stop = 1;
     pthread_join(s_thread, NULL);
+    pthread_mutex_destroy(&s_buf->buf_mutex);
 }
 
 bool monitor_peek_latest(MetricSnapshot *out) {
     if (s_count == 0) return false;
+    pthread_mutex_lock(&s_buf->buf_mutex);
     int latest = (s_buf->head - 1 + HGW_CIRC_BUF_SIZE) % HGW_CIRC_BUF_SIZE;
     *out = s_buf->slots[latest];
+    pthread_mutex_unlock(&s_buf->buf_mutex);
     return true;
+}
+
+void monitor_update_config(const char (*proc_names)[HGW_MAX_PROC_NAME],
+                            int proc_count, uint32_t interval_s) {
+    pthread_mutex_lock(&s_cfg_mutex);
+    s_interval_s = (interval_s > 0) ? interval_s : 5;
+    memset(s_proc_names, 0, sizeof(s_proc_names));
+    s_proc_count = (proc_count > HGW_MAX_PROC_LIST) ? HGW_MAX_PROC_LIST : proc_count;
+    for (int i = 0; i < s_proc_count; i++)
+        strncpy(s_proc_names[i], proc_names[i], HGW_MAX_PROC_NAME - 1);
+    pthread_mutex_unlock(&s_cfg_mutex);
 }

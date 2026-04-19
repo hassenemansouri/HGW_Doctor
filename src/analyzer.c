@@ -24,6 +24,9 @@ static void             *s_userdata;
 static pthread_t         s_thread;
 static volatile int      s_stop = 0;
 
+/* Protects s_cfg against analyzer_update_config() called from main thread */
+static pthread_mutex_t   s_cfg_mutex    = PTHREAD_MUTEX_INITIALIZER;
+
 /* History buffers for each metric type */
 #define HISTORY_MAX 300  /* enough for 5 minutes at 1s interval, adjust as needed */
 static struct {
@@ -89,8 +92,10 @@ static void *analyzer_thread(void *arg) {
     (void)arg;
     LOG_INFO("Analyzer thread started");
 
+    pthread_mutex_lock(&s_cfg_mutex);
     int required_samples =
         (int) ((s_cfg.threshold_duration_s + s_cfg.poll_interval_s - 1) / s_cfg.poll_interval_s);
+    pthread_mutex_unlock(&s_cfg_mutex);
     if (required_samples < 1) required_samples = 1;
 
     struct timespec last_seen = {0};
@@ -113,17 +118,26 @@ static void *analyzer_thread(void *arg) {
         last_seen = snap.ts;
         have_last_seen = 1;
 
+        /* Take a local config copy so analyzer_update_config() can run safely */
+        AnalyzerConfig cfg;
+        pthread_mutex_lock(&s_cfg_mutex);
+        cfg = s_cfg;
+        required_samples = (int) ((cfg.threshold_duration_s + cfg.poll_interval_s - 1)
+                                  / cfg.poll_interval_s);
+        pthread_mutex_unlock(&s_cfg_mutex);
+        if (required_samples < 1) required_samples = 1;
+
         history_push(&snap);
 
         /* --- System-wide CPU --- */
-        if (snap.sys_cpu_pct >= s_cfg.cpu_threshold_pct) {
+        if (snap.sys_cpu_pct >= cfg.cpu_threshold_pct) {
             if (!cpu_alert_active &&
                 sustained_threshold(s_history.sys_cpu, s_history.count,
-                                    s_cfg.cpu_threshold_pct, required_samples)) {
+                                    cfg.cpu_threshold_pct, required_samples)) {
                 AnomalyEvent ev = {
                     .type = ANOMALY_CPU,
                     .metric_value = snap.sys_cpu_pct,
-                    .duration_s = s_cfg.threshold_duration_s
+                    .duration_s = cfg.threshold_duration_s
                 };
                 clock_gettime(CLOCK_REALTIME, &ev.detected_at);
                 if (s_callback) s_callback(&ev, s_userdata);
@@ -134,14 +148,14 @@ static void *analyzer_thread(void *arg) {
         }
 
         /* --- System-wide Memory --- */
-        if (snap.sys_mem_pct >= s_cfg.mem_threshold_pct) {
+        if (snap.sys_mem_pct >= cfg.mem_threshold_pct) {
             if (!mem_alert_active &&
                 sustained_threshold(s_history.sys_mem, s_history.count,
-                                    s_cfg.mem_threshold_pct, required_samples)) {
+                                    cfg.mem_threshold_pct, required_samples)) {
                 AnomalyEvent ev = {
                     .type = ANOMALY_MEMORY,
                     .metric_value = snap.sys_mem_pct,
-                    .duration_s = s_cfg.threshold_duration_s
+                    .duration_s = cfg.threshold_duration_s
                 };
                 clock_gettime(CLOCK_REALTIME, &ev.detected_at);
                 if (s_callback) s_callback(&ev, s_userdata);
@@ -163,7 +177,7 @@ static void *analyzer_thread(void *arg) {
                     AnomalyEvent ev = {
                         .type = ANOMALY_PROCESS,
                         .metric_value = 0,
-                        .duration_s = s_cfg.threshold_duration_s
+                        .duration_s = cfg.threshold_duration_s
                     };
                     strncpy(ev.process_name, ps->name, HGW_MAX_PROC_NAME - 1);
                     clock_gettime(CLOCK_REALTIME, &ev.detected_at);
@@ -176,14 +190,14 @@ static void *analyzer_thread(void *arg) {
                 proc_dead_alert[i] = 0;
 
                 /* Per-process CPU */
-                if (ps->cpu_pct >= s_cfg.cpu_threshold_pct) {
+                if (ps->cpu_pct >= cfg.cpu_threshold_pct) {
                     if (!proc_cpu_alert[i] &&
                         sustained_threshold(s_history.proc_cpu[i], s_history.count,
-                                            s_cfg.cpu_threshold_pct, required_samples)) {
+                                            cfg.cpu_threshold_pct, required_samples)) {
                         AnomalyEvent ev = {
                             .type = ANOMALY_PROCESS_CPU,
                             .metric_value = ps->cpu_pct,
-                            .duration_s = s_cfg.threshold_duration_s
+                            .duration_s = cfg.threshold_duration_s
                         };
                         strncpy(ev.process_name, ps->name, HGW_MAX_PROC_NAME - 1);
                         clock_gettime(CLOCK_REALTIME, &ev.detected_at);
@@ -195,14 +209,14 @@ static void *analyzer_thread(void *arg) {
                 }
 
                 /* Per-process Memory */
-                if (ps->mem_pct >= s_cfg.mem_threshold_pct) {
+                if (ps->mem_pct >= cfg.mem_threshold_pct) {
                     if (!proc_mem_alert[i] &&
                         sustained_threshold(s_history.proc_mem[i], s_history.count,
-                                            s_cfg.mem_threshold_pct, required_samples)) {
+                                            cfg.mem_threshold_pct, required_samples)) {
                         AnomalyEvent ev = {
                             .type = ANOMALY_PROCESS_MEM,
                             .metric_value = ps->mem_pct,
-                            .duration_s = s_cfg.threshold_duration_s
+                            .duration_s = cfg.threshold_duration_s
                         };
                         strncpy(ev.process_name, ps->name, HGW_MAX_PROC_NAME - 1);
                         clock_gettime(CLOCK_REALTIME, &ev.detected_at);
@@ -242,4 +256,11 @@ int analyzer_start(void) {
 void analyzer_stop(void) {
     s_stop = 1;
     pthread_join(s_thread, NULL);
+}
+
+void analyzer_update_config(const AnalyzerConfig *cfg) {
+    if (!cfg) return;
+    pthread_mutex_lock(&s_cfg_mutex);
+    s_cfg = *cfg;
+    pthread_mutex_unlock(&s_cfg_mutex);
 }

@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
 
@@ -13,8 +14,9 @@ enum {
 
 #include "logger.h"
 
-static LogLevel s_level = LOG_LEVEL_INFO;
-static int      s_open = 0;
+static LogLevel s_level  = LOG_LEVEL_INFO;
+static int      s_open   = 0;
+static int      s_stderr = 0;  /* also mirror to stderr (set via HGW_LOG_STDERR=1) */
 
 static int to_syslog_priority(LogLevel level) {
     switch (level) {
@@ -37,7 +39,8 @@ static const char *level_name(LogLevel level) {
 }
 
 int logger_init(LogLevel level, const char *ident) {
-    s_level = level;
+    s_level  = level;
+    s_stderr = (getenv("HGW_LOG_STDERR") != NULL);
     openlog((ident && ident[0] != '\0') ? ident : "hgw-doctor", LOG_PID, LOG_DAEMON);
     s_open = 1;
     return 0;
@@ -63,6 +66,8 @@ void logger_log(LogLevel level, const char *file, int line, const char *fmt, ...
 
     if (s_open) {
         syslog(to_syslog_priority(level), "%s:%d %s", file, line, message);
+        if (s_stderr)
+            fprintf(stderr, "[%s] %s:%d %s\n", level_name(level), file, line, message);
     } else {
         fprintf(stderr, "[%s] %s:%d %s\n", level_name(level), file, line, message);
     }

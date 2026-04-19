@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
+#include <pthread.h>
 
 /* -------------------------------------------------------------------------
  * Constants
@@ -47,9 +48,10 @@ typedef struct {
 } MetricSnapshot;
 
 typedef struct {
-    MetricSnapshot slots[HGW_CIRC_BUF_SIZE];
-    int            head;          /**< next write index                      */
-    int            tail;          /**< reserved for future consumers         */
+    MetricSnapshot  slots[HGW_CIRC_BUF_SIZE];
+    int             head;          /**< next write index                      */
+    int             tail;          /**< reserved for future consumers         */
+    pthread_mutex_t buf_mutex;     /**< protects head/slots against monitor+analyzer concurrent access */
 } MetricCircBuf;
 
 /* -------------------------------------------------------------------------

@@ -10,6 +10,7 @@
  * the live data model so they become visible to the ACS.
  */
 
+#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 #include <syslog.h>
@@ -29,10 +30,10 @@
 /* -------------------------------------------------------------------------
  * Internal helpers
  * ------------------------------------------------------------------------- */
-static amxd_dm_t *s_dm = NULL;
-static uint32_t   s_anomaly_count = 0;
-static uint32_t   s_total_actions = 0;
-static uint32_t   s_total_uploads = 0;
+static amxd_dm_t         *s_dm = NULL;
+static _Atomic uint32_t   s_anomaly_count = 0;
+static _Atomic uint32_t   s_total_actions = 0;
+static _Atomic uint32_t   s_total_uploads = 0;
 
 static int dm_split_path(const char *param_path, char *object_path,
                          size_t object_path_len, char *param_name,
@@ -148,9 +149,9 @@ static void dm_set_datetime_now(const char *param_path) {
  * ------------------------------------------------------------------------- */
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     s_dm = dm;
-    s_anomaly_count = 0;
-    s_total_actions = 0;
-    s_total_uploads = 0;
+    atomic_store(&s_anomaly_count, 0);
+    atomic_store(&s_total_actions, 0);
+    atomic_store(&s_total_uploads, 0);
 
     int rc = amxo_parser_parse_file(parser, odl_path, amxd_dm_get_root(dm));
     if (rc != 0) {
@@ -230,8 +231,7 @@ void datamodel_record_action(const RecoveryResult *r) {
     dm_set_string(TR181_LAST_ACTION_TYPE,   type_str);
     dm_set_string(TR181_LAST_ACTION_STATUS, result_str);
     dm_set_datetime_now(TR181_LAST_ACTION_TIME);
-    s_total_actions++;
-    dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, s_total_actions);
+    dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, atomic_fetch_add(&s_total_actions, 1) + 1);
 
     syslog(LOG_INFO, "Recovery action recorded: %s -> %s", type_str, result_str);
 }
@@ -248,15 +248,13 @@ void datamodel_record_upload(UploadStatus status, const char *archive_path) {
     if (archive_path)
         dm_set_string(TR181_DIAG_ARCHIVE_PATH, archive_path);
     if (status == UPLOAD_STATUS_SUCCESS) {
-        s_total_uploads++;
-        dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, s_total_uploads);
+        dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, atomic_fetch_add(&s_total_uploads, 1) + 1);
         dm_set_datetime_now(TR181_UPLOAD_TIMESTAMP);
     }
 }
 
 void datamodel_increment_anomaly_count(void) {
-    s_anomaly_count++;
-    dm_set_uint32(TR181_ANOMALY_COUNT, s_anomaly_count);
+    dm_set_uint32(TR181_ANOMALY_COUNT, atomic_fetch_add(&s_anomaly_count, 1) + 1);
 }
 
 void datamodel_append_anomaly_log(const AnomalyEvent *event,
@@ -310,9 +308,9 @@ amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
 amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
                                  amxc_var_t *args, amxc_var_t *ret) {
     (void)obj; (void)fn; (void)args; (void)ret;
-    s_anomaly_count = 0;
-    s_total_actions = 0;
-    s_total_uploads = 0;
+    atomic_store(&s_anomaly_count, 0);
+    atomic_store(&s_total_actions, 0);
+    atomic_store(&s_total_uploads, 0);
     dm_set_uint32(TR181_ANOMALY_COUNT,      0);
     dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, 0);
     dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, 0);

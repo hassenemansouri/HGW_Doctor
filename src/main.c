@@ -10,6 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <pthread.h>
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
@@ -39,11 +40,12 @@ static volatile sig_atomic_t g_reload_cfg  = 0;
 static volatile sig_atomic_t g_diag_req    = 0;  /* set by SIGUSR1 — manual trigger */
 static volatile sig_atomic_t g_anomaly_diag = 0; /* set by on_anomaly — anomaly trigger */
 
-static amxd_dm_t      g_dm;
-static amxo_parser_t  g_parser;
-static MetricCircBuf  g_metric_buf;
-static amxb_bus_ctx_t *g_bus_ctx = NULL;
-static AnomalyEvent   s_last_event;
+static amxd_dm_t        g_dm;
+static amxo_parser_t    g_parser;
+static MetricCircBuf    g_metric_buf;
+static amxb_bus_ctx_t  *g_bus_ctx = NULL;
+static AnomalyEvent     s_last_event;
+static pthread_mutex_t  s_event_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static const char *action_type_to_string(ActionType action) {
     switch (action) {
@@ -86,11 +88,15 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
     LOG_WARN("Anomaly detected: type=%d value=%u%% duration=%us",
              event->type, event->metric_value, event->duration_s);
 
+    /* Write s_last_event and set g_anomaly_diag under lock so the main thread
+     * always sees a consistent snapshot (memory ordering guarantee). */
+    pthread_mutex_lock(&s_event_mutex);
     s_last_event = *event;
+    g_anomaly_diag = 1;
+    pthread_mutex_unlock(&s_event_mutex);
 
     datamodel_increment_anomaly_count();
     recovery_dispatch(event);
-    g_anomaly_diag = 1; /* diag collection handled in main loop — keep analyzer thread unblocked */
 }
 
 /* -------------------------------------------------------------------------
@@ -99,8 +105,14 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
 static void on_recovery_done(const RecoveryResult *result, void *userdata) {
     (void)userdata;
     datamodel_record_action(result);
+    /* Take a local copy of s_last_event under lock to avoid racing with the
+     * main thread reading it in the event loop. */
+    AnomalyEvent ev_copy;
+    pthread_mutex_lock(&s_event_mutex);
+    ev_copy = s_last_event;
+    pthread_mutex_unlock(&s_event_mutex);
     datamodel_append_anomaly_log(
-        &s_last_event,
+        &ev_copy,
         action_type_to_string(result->action),
         result->result == RESULT_SUCCESS ? "Success" : "Failure"
     );
@@ -198,13 +210,13 @@ int main(int argc, char *argv[]) {
     rcfg.action_type   = cfg.action_type;
     rcfg.process_count = cfg.process_count;
     memcpy(rcfg.process_names, cfg.process_names, sizeof(rcfg.process_names));
-    __builtin_strncpy(rcfg.scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
+    strncpy(rcfg.scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
     recovery_init(&rcfg, on_recovery_done, NULL);
 
     DiagConfig dcfg = {0};
     dcfg.max_archives = cfg.diag_max_archives;
     dcfg.watch_pid    = 0;
-    __builtin_strncpy(dcfg.output_dir, cfg.diag_output_dir, HGW_MAX_PATH - 1);
+    strncpy(dcfg.output_dir, cfg.diag_output_dir, HGW_MAX_PATH - 1);
     diag_collector_init(&dcfg, on_diag_done, NULL);
 
     UploaderConfig ucfg = {0};
@@ -212,8 +224,8 @@ int main(int argc, char *argv[]) {
     ucfg.max_retries    = cfg.upload_max_retries;
     ucfg.retry_delay_s  = cfg.upload_retry_delay_s;
     ucfg.tls_verify     = cfg.tls_verify;
-    __builtin_strncpy(ucfg.url,          cfg.upload_url,   HGW_MAX_URL - 1);
-    __builtin_strncpy(ucfg.ca_cert_path, cfg.ca_cert_path, HGW_MAX_PATH - 1);
+    strncpy(ucfg.url,          cfg.upload_url,   HGW_MAX_URL - 1);
+    strncpy(ucfg.ca_cert_path, cfg.ca_cert_path, HGW_MAX_PATH - 1);
     uploader_init(&ucfg, on_upload_done, NULL);
 
     /* 6. Start threads */
@@ -226,16 +238,44 @@ int main(int argc, char *argv[]) {
     /* 7. Main event loop */
     uint32_t uptime_s = 0;
     while (g_running) {
-        if (g_reload_cfg) { g_reload_cfg = 0; config_reload(); }
+        if (g_reload_cfg) {
+            g_reload_cfg = 0;
+            config_reload();
+            /* Propagate updated thresholds to running threads */
+            const HgwConfig *cur = config_get();
+            monitor_update_config(
+                (const char (*)[HGW_MAX_PROC_NAME]) cur->process_names,
+                cur->process_count, cur->poll_interval_s);
+            AnalyzerConfig acfg = {0};
+            acfg.cpu_threshold_pct    = cur->cpu_threshold_pct;
+            acfg.mem_threshold_pct    = cur->mem_threshold_pct;
+            acfg.threshold_duration_s = cur->threshold_duration_s;
+            acfg.poll_interval_s      = cur->poll_interval_s;
+            acfg.process_count        = cur->process_count;
+            memcpy(acfg.process_names, cur->process_names, sizeof(acfg.process_names));
+            analyzer_update_config(&acfg);
+            LOG_INFO("Config reloaded and modules updated");
+        }
         if (g_diag_req) {
             g_diag_req = 0;
             LOG_INFO("On-demand diagnostics requested via SIGUSR1");
             diag_collect(NULL);
         }
+        /* Check for trigger file written by dm_trigger_diagnostics() RPC */
+        if (access("/tmp/hgw_diag_trigger", F_OK) == 0) {
+            unlink("/tmp/hgw_diag_trigger");
+            LOG_INFO("On-demand diagnostics triggered via TR-181 RPC");
+            diag_collect(NULL);
+        }
         if (g_anomaly_diag) {
+            /* Take a consistent copy of the event under lock */
+            AnomalyEvent ev_copy;
+            pthread_mutex_lock(&s_event_mutex);
             g_anomaly_diag = 0;
-            LOG_INFO("Collecting diagnostics after anomaly (type=%d)", s_last_event.type);
-            diag_collect(&s_last_event);
+            ev_copy = s_last_event;
+            pthread_mutex_unlock(&s_event_mutex);
+            LOG_INFO("Collecting diagnostics after anomaly (type=%d)", ev_copy.type);
+            diag_collect(&ev_copy);
         }
 
         MetricSnapshot snap;
@@ -259,7 +299,7 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-        amxp_sigmngr_handle(NULL);
+        amxp_signal_read();
     }
 
     /* 8. Graceful shutdown */

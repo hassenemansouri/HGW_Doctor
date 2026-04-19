@@ -1,4 +1,6 @@
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -12,31 +14,23 @@ static upload_done_callback s_callback = NULL;
 static void                *s_userdata = NULL;
 static int                  s_curl_ready = 0;
 
-int uploader_init(const UploaderConfig *cfg, upload_done_callback cb, void *userdata) {
-    if (!cfg) return -1;
+/* Upload worker thread state */
+static pthread_t            s_upload_thread;
+static int                  s_thread_active = 0;
+static pthread_mutex_t      s_thread_mutex  = PTHREAD_MUTEX_INITIALIZER;
 
-    s_cfg = *cfg;
-    s_callback = cb;
-    s_userdata = userdata;
+typedef struct {
+    char path[HGW_MAX_PATH * 2];
+} UploadJob;
 
-    if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) return -1;
-    s_curl_ready = 1;
-    return 0;
-}
-
-int uploader_send(const char *archive_path) {
+static void *upload_thread_fn(void *arg) {
+    UploadJob *job = (UploadJob *)arg;
     CURL *curl;
     curl_mime *mime;
     curl_mimepart *part;
     UploadStatus status = UPLOAD_STATUS_FAILED;
-    int attempt;
 
-    if (!s_curl_ready || !archive_path || archive_path[0] == '\0' || s_cfg.url[0] == '\0') {
-        if (s_callback) s_callback(UPLOAD_STATUS_FAILED, archive_path, s_userdata);
-        return -1;
-    }
-
-    for (attempt = 0; attempt <= (int) s_cfg.max_retries; ++attempt) {
+    for (int attempt = 0; attempt <= (int)s_cfg.max_retries; ++attempt) {
         CURLcode rc;
         long http_code = 0;
 
@@ -46,11 +40,11 @@ int uploader_send(const char *archive_path) {
         mime = curl_mime_init(curl);
         part = curl_mime_addpart(mime);
         curl_mime_name(part, "file");
-        curl_mime_filedata(part, archive_path);
+        curl_mime_filedata(part, job->path);
 
         curl_easy_setopt(curl, CURLOPT_URL, s_cfg.url);
         curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long) s_cfg.timeout_s);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)s_cfg.timeout_s);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "hgw-doctor/0.1");
 
@@ -73,20 +67,83 @@ int uploader_send(const char *archive_path) {
         }
 
         LOG_WARN("Upload attempt %d failed for %s (curl=%d http=%ld)",
-                 attempt + 1, archive_path, rc, http_code);
-        if (attempt < (int) s_cfg.max_retries && s_cfg.retry_delay_s > 0) {
+                 attempt + 1, job->path, rc, http_code);
+        if (attempt < (int)s_cfg.max_retries && s_cfg.retry_delay_s > 0)
             sleep(s_cfg.retry_delay_s);
-        }
     }
 
-    if (status == UPLOAD_STATUS_SUCCESS) {
-        LOG_INFO("Upload successful for %s", archive_path);
+    if (status == UPLOAD_STATUS_SUCCESS)
+        LOG_INFO("Upload successful for %s", job->path);
+
+    if (s_callback) s_callback(status, job->path, s_userdata);
+
+    free(job);
+
+    pthread_mutex_lock(&s_thread_mutex);
+    s_thread_active = 0;
+    pthread_mutex_unlock(&s_thread_mutex);
+
+    return NULL;
+}
+
+int uploader_init(const UploaderConfig *cfg, upload_done_callback cb, void *userdata) {
+    if (!cfg) return -1;
+
+    s_cfg      = *cfg;
+    s_callback = cb;
+    s_userdata = userdata;
+
+    if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) return -1;
+    s_curl_ready = 1;
+    return 0;
+}
+
+int uploader_send(const char *archive_path) {
+    if (!s_curl_ready || !archive_path || archive_path[0] == '\0' || s_cfg.url[0] == '\0') {
+        if (s_callback) s_callback(UPLOAD_STATUS_FAILED, archive_path, s_userdata);
+        return -1;
     }
-    if (s_callback) s_callback(status, archive_path, s_userdata);
-    return (status == UPLOAD_STATUS_SUCCESS) ? 0 : -1;
+
+    pthread_mutex_lock(&s_thread_mutex);
+    if (s_thread_active) {
+        pthread_mutex_unlock(&s_thread_mutex);
+        LOG_WARN("Upload already in progress, dropping: %s", archive_path);
+        return -1;
+    }
+
+    UploadJob *job = malloc(sizeof(UploadJob));
+    if (!job) {
+        pthread_mutex_unlock(&s_thread_mutex);
+        if (s_callback) s_callback(UPLOAD_STATUS_FAILED, archive_path, s_userdata);
+        return -1;
+    }
+    strncpy(job->path, archive_path, sizeof(job->path) - 1);
+    job->path[sizeof(job->path) - 1] = '\0';
+
+    s_thread_active = 1;
+    if (pthread_create(&s_upload_thread, NULL, upload_thread_fn, job) != 0) {
+        s_thread_active = 0;
+        pthread_mutex_unlock(&s_thread_mutex);
+        free(job);
+        if (s_callback) s_callback(UPLOAD_STATUS_FAILED, archive_path, s_userdata);
+        return -1;
+    }
+    pthread_mutex_unlock(&s_thread_mutex);
+
+    LOG_INFO("Upload started in background for %s", archive_path);
+    return 0;
 }
 
 void uploader_cleanup(void) {
+    pthread_mutex_lock(&s_thread_mutex);
+    int active = s_thread_active;
+    pthread_mutex_unlock(&s_thread_mutex);
+
+    if (active) {
+        LOG_INFO("Waiting for upload thread to finish...");
+        pthread_join(s_upload_thread, NULL);
+    }
+
     if (s_curl_ready) curl_global_cleanup();
     s_curl_ready = 0;
     memset(&s_cfg, 0, sizeof(s_cfg));

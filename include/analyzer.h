@@ -16,9 +16,10 @@ typedef struct {
 
 typedef void (*anomaly_callback)(const AnomalyEvent *event, void *userdata);
 
-int analyzer_init(MetricCircBuf *buf, const AnalyzerConfig *cfg,
-                  anomaly_callback cb, void *userdata);
-int analyzer_start(void);
+int  analyzer_init(MetricCircBuf *buf, const AnalyzerConfig *cfg,
+                   anomaly_callback cb, void *userdata);
+int  analyzer_start(void);
 void analyzer_stop(void);
+void analyzer_update_config(const AnalyzerConfig *cfg);
 
 #endif /* HGW_ANALYZER_H */
