@@ -237,6 +237,7 @@ int main(int argc, char *argv[]) {
 
     /* 7. Main event loop */
     uint32_t uptime_s = 0;
+    time_t last_stats_update = 0;
     while (g_running) {
         if (g_reload_cfg) {
             g_reload_cfg = 0;
@@ -278,13 +279,18 @@ int main(int argc, char *argv[]) {
             diag_collect(&ev_copy);
         }
 
-        MetricSnapshot snap;
-        if (monitor_peek_latest(&snap)) {
-            datamodel_update_stats(snap.sys_cpu_pct, snap.sys_mem_pct,
-                                   snap.sys_mem_free_kb);
+        /* Update data model stats at poll_interval_s cadence, not every 100ms */
+        time_t now = time(NULL);
+        if (now - last_stats_update >= (time_t)cfg.poll_interval_s) {
+            last_stats_update = now;
+            MetricSnapshot snap;
+            if (monitor_peek_latest(&snap)) {
+                datamodel_update_stats(snap.sys_cpu_pct, snap.sys_mem_pct,
+                                       snap.sys_mem_free_kb);
+            }
+            uptime_s++;
+            datamodel_update_uptime(uptime_s);
         }
-        uptime_s++;
-        datamodel_update_uptime(uptime_s);
 
         /* Process ubus events */
         if (g_bus_ctx != NULL) {
