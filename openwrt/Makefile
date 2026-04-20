@@ -96,6 +96,10 @@ define Package/hgw-doctor/install
 	# procd init script
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/openwrt/files/hgw-doctor.init $(1)/etc/init.d/hgw-doctor
+
+	# Integration test script
+	$(INSTALL_DIR) $(1)/usr/share/hgw_doctor
+	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/tests/run_tests.sh $(1)/usr/share/hgw_doctor/
 endef
 
 $(eval $(call BuildPackage,hgw-doctor))
