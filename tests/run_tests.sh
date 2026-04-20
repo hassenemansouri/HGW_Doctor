@@ -33,6 +33,8 @@ SVC_PID=""
 
 cleanup() {
     info "Cleaning up..."
+    # Reset test-service stress mode before killing it
+    ubus call TestService SetMode '{"mode":"Idle"}' 2>/dev/null || true
     [ -n "$HGW_PID" ] && kill "$HGW_PID" 2>/dev/null && wait "$HGW_PID" 2>/dev/null || true
     [ -n "$SVC_PID" ] && kill "$SVC_PID" 2>/dev/null && wait "$SVC_PID" 2>/dev/null || true
     # Kill any leftover stress processes
@@ -208,6 +210,69 @@ if [ $FOUND -eq 1 ]; then
     fi
 else
     fail "No new diagnostics collection logged within 20s"
+fi
+
+# ---------------------------------------------------------------------------
+# Tests 5 & 6 require test-service to be running AND registered on ubus
+echo ""
+echo "--- Checking ubus availability for per-process tests ---"
+UBUS_AVAILABLE=0
+if ubus call TestService SetMode '{"mode":"Idle"}' 2>/dev/null; then
+    UBUS_AVAILABLE=1
+    info "ubus reachable — running per-process anomaly tests"
+else
+    info "ubus unavailable — skipping Tests 5 & 6"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 5: Per-process CPU anomaly (ANOMALY_PROCESS_CPU, type=4) ---"
+if [ $UBUS_AVAILABLE -eq 1 ]; then
+    # Ensure test-service is running before stressing it
+    if ! kill -0 "$SVC_PID" 2>/dev/null; then
+        start_svc
+        sleep 5
+    fi
+
+    info "Triggering CPUStress via ubus SetMode..."
+    ubus call TestService SetMode '{"mode":"CPUStress"}'
+
+    if wait_for_log "Anomaly detected: type=4" 60 "$HGW_LOG"; then
+        pass "Per-process CPU anomaly detected (type=4)"
+    else
+        fail "Per-process CPU anomaly NOT detected within 60s"
+    fi
+
+    info "Stopping CPUStress..."
+    ubus call TestService SetMode '{"mode":"Idle"}' 2>/dev/null || true
+    sleep 5
+else
+    info "SKIP: ubus unavailable"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 6: Per-process Memory anomaly (ANOMALY_PROCESS_MEM, type=5) ---"
+if [ $UBUS_AVAILABLE -eq 1 ]; then
+    if ! kill -0 "$SVC_PID" 2>/dev/null; then
+        start_svc
+        sleep 5
+    fi
+
+    info "Triggering MemStress via ubus SetMode (allocates 600 MB)..."
+    ubus call TestService SetMode '{"mode":"MemStress"}'
+
+    if wait_for_log "Anomaly detected: type=5" 60 "$HGW_LOG"; then
+        pass "Per-process Memory anomaly detected (type=5)"
+    else
+        fail "Per-process Memory anomaly NOT detected within 60s"
+    fi
+
+    info "Stopping MemStress..."
+    ubus call TestService SetMode '{"mode":"Idle"}' 2>/dev/null || true
+    sleep 5
+else
+    info "SKIP: ubus unavailable"
 fi
 
 # ---------------------------------------------------------------------------
