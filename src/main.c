@@ -238,6 +238,8 @@ int main(int argc, char *argv[]) {
     /* 7. Main event loop */
     uint32_t uptime_s = 0;
     time_t last_stats_update = 0;
+    time_t last_diag_collect = 0;
+#define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
     while (g_running) {
         if (g_reload_cfg) {
             g_reload_cfg = 0;
@@ -275,8 +277,15 @@ int main(int argc, char *argv[]) {
             g_anomaly_diag = 0;
             ev_copy = s_last_event;
             pthread_mutex_unlock(&s_event_mutex);
-            LOG_INFO("Collecting diagnostics after anomaly (type=%d)", ev_copy.type);
-            diag_collect(&ev_copy);
+            time_t now_diag = time(NULL);
+            if (now_diag - last_diag_collect >= DIAG_COOLDOWN_S) {
+                last_diag_collect = now_diag;
+                LOG_INFO("Collecting diagnostics after anomaly (type=%d)", ev_copy.type);
+                diag_collect(&ev_copy);
+            } else {
+                LOG_INFO("Anomaly diag skipped — cooldown (%lds remaining)",
+                         (long)(DIAG_COOLDOWN_S - (now_diag - last_diag_collect)));
+            }
         }
 
         /* Update data model stats at poll_interval_s cadence, not every 100ms */
