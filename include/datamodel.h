@@ -1,6 +1,7 @@
 #ifndef HGW_DATAMODEL_H
 #define HGW_DATAMODEL_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <amxc/amxc.h>
@@ -29,6 +30,8 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
                                   const char *action_taken,
                                   const char *action_result);
 void datamodel_update_uptime(uint32_t uptime_s);
+bool datamodel_get_thresholds(uint32_t *cpu_pct, uint32_t *mem_pct,
+                               uint32_t *duration_s, uint32_t *poll_s);
 
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);

@@ -334,13 +334,49 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
 }
 
 /* -------------------------------------------------------------------------
- * Event handler: fires when any parameter under HGWDoctor.* changes
- * Propagates ACS-written values back into the live config of each module.
+ * Read current threshold params from the live data model.
+ * Called by the main loop after dm_on_param_changed fires.
+ * ------------------------------------------------------------------------- */
+bool datamodel_get_thresholds(uint32_t *cpu_pct, uint32_t *mem_pct,
+                               uint32_t *duration_s, uint32_t *poll_s) {
+    char object_path[HGW_MAX_PATH];
+    char param_name[HGW_MAX_PROC_NAME];
+    amxc_var_t val;
+    amxd_object_t *obj;
+
+    if (!s_dm || !cpu_pct || !mem_pct || !duration_s || !poll_s) return false;
+
+    amxc_var_init(&val);
+
+#define DM_READ_U32(path, out) do { \
+    if (dm_split_path((path), object_path, sizeof(object_path), \
+                      param_name, sizeof(param_name)) == 0) { \
+        obj = amxd_dm_findf(s_dm, "%s", object_path); \
+        if (obj && amxd_object_get_param(obj, param_name, &val) == amxd_status_ok) \
+            *(out) = amxc_var_dyncast(uint32_t, &val); \
+    } \
+} while (0)
+
+    DM_READ_U32(TR181_CPU_THRESHOLD,      cpu_pct);
+    DM_READ_U32(TR181_MEM_THRESHOLD,      mem_pct);
+    DM_READ_U32(TR181_THRESHOLD_DURATION, duration_s);
+    DM_READ_U32(TR181_POLL_INTERVAL,      poll_s);
+
+#undef DM_READ_U32
+    amxc_var_clean(&val);
+    return true;
+}
+
+/* -------------------------------------------------------------------------
+ * Event handler: fires when any parameter under HGWDoctor.* changes.
+ * Writes a trigger file; the main loop reads it and calls
+ * datamodel_get_thresholds() to propagate the new values to running modules.
  * ------------------------------------------------------------------------- */
 amxd_status_t dm_on_param_changed(amxd_object_t *obj, amxd_function_t *fn,
                                    amxc_var_t *args, amxc_var_t *ret) {
     (void)obj; (void)fn; (void)args; (void)ret;
-    /* Config reload is handled by the daemon via SIGHUP */
-    syslog(LOG_DEBUG, "Data model parameter changed");
+    syslog(LOG_INFO, "Data model parameter changed — scheduling threshold propagation");
+    FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
+    if (f) fclose(f);
     return amxd_status_ok;
 }

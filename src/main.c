@@ -236,7 +236,7 @@ int main(int argc, char *argv[]) {
     LOG_INFO("HGW-Doctor running");
 
     /* 7. Main event loop */
-    uint32_t uptime_s = 0;
+    time_t start_time = time(NULL);
     time_t last_stats_update = 0;
     time_t last_diag_collect = 0;
 #define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
@@ -270,6 +270,27 @@ int main(int argc, char *argv[]) {
             LOG_INFO("On-demand diagnostics triggered via TR-181 RPC");
             diag_collect(NULL);
         }
+        /* Propagate ACS-written thresholds (dm_on_param_changed writes this file) */
+        if (access("/tmp/hgw_cfg_changed", F_OK) == 0) {
+            unlink("/tmp/hgw_cfg_changed");
+            uint32_t dm_cpu, dm_mem, dm_dur, dm_poll;
+            if (datamodel_get_thresholds(&dm_cpu, &dm_mem, &dm_dur, &dm_poll)
+                    && dm_poll > 0) {
+                AnalyzerConfig acfg2 = {0};
+                acfg2.cpu_threshold_pct    = dm_cpu;
+                acfg2.mem_threshold_pct    = dm_mem;
+                acfg2.threshold_duration_s = dm_dur;
+                acfg2.poll_interval_s      = dm_poll;
+                acfg2.process_count        = cfg.process_count;
+                memcpy(acfg2.process_names, cfg.process_names, sizeof(acfg2.process_names));
+                analyzer_update_config(&acfg2);
+                monitor_update_config(
+                    (const char (*)[HGW_MAX_PROC_NAME]) cfg.process_names,
+                    cfg.process_count, dm_poll);
+                LOG_INFO("Thresholds updated from DM: cpu=%u mem=%u dur=%u poll=%u",
+                         dm_cpu, dm_mem, dm_dur, dm_poll);
+            }
+        }
         if (g_anomaly_diag) {
             /* Take a consistent copy of the event under lock */
             AnomalyEvent ev_copy;
@@ -297,8 +318,7 @@ int main(int argc, char *argv[]) {
                 datamodel_update_stats(snap.sys_cpu_pct, snap.sys_mem_pct,
                                        snap.sys_mem_free_kb);
             }
-            uptime_s++;
-            datamodel_update_uptime(uptime_s);
+            datamodel_update_uptime((uint32_t)(time(NULL) - start_time));
         }
 
         /* Process ubus events */

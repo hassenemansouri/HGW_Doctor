@@ -1,5 +1,7 @@
 #include <dirent.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +16,15 @@
 static DiagConfig         s_cfg;
 static diag_done_callback s_callback = NULL;
 static void              *s_userdata = NULL;
+
+static _Atomic int  s_diag_active = ATOMIC_VAR_INIT(0);
+static pthread_t    s_diag_thread;
+
+typedef struct {
+    AnomalyEvent event;
+    int          has_event;
+} DiagArg;
+static DiagArg s_diag_arg;
 
 static void copy_string(char *dst, size_t dst_size, const char *src) {
     size_t len;
@@ -197,7 +208,7 @@ int diag_collector_init(const DiagConfig *cfg, diag_done_callback cb, void *user
     return ensure_dir(s_cfg.output_dir);
 }
 
-int diag_collect(const AnomalyEvent *event) {
+static int diag_collect_sync(const AnomalyEvent *event) {
     char timestamp[32];
     char dir_name[64];
     char archive_name[64];
@@ -255,7 +266,35 @@ int diag_collect(const AnomalyEvent *event) {
     return 0;
 }
 
+static void *diag_thread_fn(void *arg) {
+    DiagArg *a = (DiagArg *)arg;
+    diag_collect_sync(a->has_event ? &a->event : NULL);
+    atomic_store(&s_diag_active, 0);
+    return NULL;
+}
+
+int diag_collect(const AnomalyEvent *event) {
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&s_diag_active, &expected, 1)) {
+        LOG_WARN("Diag collection already in progress, skipping");
+        return -1;
+    }
+    s_diag_arg.has_event = (event != NULL);
+    if (event) s_diag_arg.event = *event;
+
+    if (pthread_create(&s_diag_thread, NULL, diag_thread_fn, &s_diag_arg) != 0) {
+        atomic_store(&s_diag_active, 0);
+        LOG_ERROR("Failed to start diag collection thread");
+        return -1;
+    }
+    pthread_detach(s_diag_thread);
+    return 0;
+}
+
 void diag_collector_cleanup(void) {
+    /* Wait up to 30s for any in-flight collection to finish */
+    for (int i = 0; i < 300 && atomic_load(&s_diag_active); i++)
+        usleep(100000);
     memset(&s_cfg, 0, sizeof(s_cfg));
     s_callback = NULL;
     s_userdata = NULL;

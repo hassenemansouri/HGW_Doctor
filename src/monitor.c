@@ -290,8 +290,11 @@ void monitor_stop(void) {
 }
 
 bool monitor_peek_latest(MetricSnapshot *out) {
-    if (s_count == 0) return false;
     pthread_mutex_lock(&s_buf->buf_mutex);
+    if (s_count == 0) {
+        pthread_mutex_unlock(&s_buf->buf_mutex);
+        return false;
+    }
     int latest = (s_buf->head - 1 + HGW_CIRC_BUF_SIZE) % HGW_CIRC_BUF_SIZE;
     *out = s_buf->slots[latest];
     pthread_mutex_unlock(&s_buf->buf_mutex);

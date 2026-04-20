@@ -28,6 +28,15 @@ static ActionType parse_action_type(const char *value) {
     return ACTION_NONE;
 }
 
+static uint32_t parse_uint(const char *value, uint32_t fallback) {
+    char *end;
+    if (!value || value[0] == '\0') return fallback;
+    errno = 0;
+    unsigned long v = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') return fallback;
+    return (uint32_t)v;
+}
+
 static bool parse_bool(const char *value) {
     return strcasecmp(value, "1") == 0 ||
            strcasecmp(value, "true") == 0 ||
@@ -56,10 +65,10 @@ static void config_defaults(HgwConfig *cfg) {
 }
 
 static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) {
-    if (strcasecmp(key, "CPUThreshold") == 0) cfg->cpu_threshold_pct = (uint32_t) strtoul(value, NULL, 10);
-    else if (strcasecmp(key, "MemThreshold") == 0) cfg->mem_threshold_pct = (uint32_t) strtoul(value, NULL, 10);
-    else if (strcasecmp(key, "ThresholdDuration") == 0) cfg->threshold_duration_s = (uint32_t) strtoul(value, NULL, 10);
-    else if (strcasecmp(key, "PollInterval") == 0) cfg->poll_interval_s = (uint32_t) strtoul(value, NULL, 10);
+    if (strcasecmp(key, "CPUThreshold") == 0) cfg->cpu_threshold_pct = parse_uint(value, cfg->cpu_threshold_pct);
+    else if (strcasecmp(key, "MemThreshold") == 0) cfg->mem_threshold_pct = parse_uint(value, cfg->mem_threshold_pct);
+    else if (strcasecmp(key, "ThresholdDuration") == 0) cfg->threshold_duration_s = parse_uint(value, cfg->threshold_duration_s);
+    else if (strcasecmp(key, "PollInterval") == 0) cfg->poll_interval_s = parse_uint(value, cfg->poll_interval_s);
     else if (strcasecmp(key, "ActionType") == 0) cfg->action_type = parse_action_type(value);
     else if (strcasecmp(key, "ProcessList") == 0) {
         char tmp[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME];
@@ -83,11 +92,11 @@ static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) 
     }
     else if (strcasecmp(key, "ScriptsDir") == 0) strncpy(cfg->scripts_dir, value, sizeof(cfg->scripts_dir) - 1);
     else if (strcasecmp(key, "DiagOutputDir") == 0) strncpy(cfg->diag_output_dir, value, sizeof(cfg->diag_output_dir) - 1);
-    else if (strcasecmp(key, "DiagMaxArchives") == 0) cfg->diag_max_archives = (uint32_t) strtoul(value, NULL, 10);
+    else if (strcasecmp(key, "DiagMaxArchives") == 0) cfg->diag_max_archives = parse_uint(value, cfg->diag_max_archives);
     else if (strcasecmp(key, "UploadURL") == 0) strncpy(cfg->upload_url, value, sizeof(cfg->upload_url) - 1);
-    else if (strcasecmp(key, "UploadTimeout") == 0) cfg->upload_timeout_s = (uint32_t) strtoul(value, NULL, 10);
-    else if (strcasecmp(key, "UploadMaxRetries") == 0) cfg->upload_max_retries = (uint32_t) strtoul(value, NULL, 10);
-    else if (strcasecmp(key, "UploadRetryDelay") == 0) cfg->upload_retry_delay_s = (uint32_t) strtoul(value, NULL, 10);
+    else if (strcasecmp(key, "UploadTimeout") == 0) cfg->upload_timeout_s = parse_uint(value, cfg->upload_timeout_s);
+    else if (strcasecmp(key, "UploadMaxRetries") == 0) cfg->upload_max_retries = parse_uint(value, cfg->upload_max_retries);
+    else if (strcasecmp(key, "UploadRetryDelay") == 0) cfg->upload_retry_delay_s = parse_uint(value, cfg->upload_retry_delay_s);
     else if (strcasecmp(key, "TLSVerify") == 0) cfg->tls_verify = parse_bool(value);
     else if (strcasecmp(key, "CACertPath") == 0) strncpy(cfg->ca_cert_path, value, sizeof(cfg->ca_cert_path) - 1);
     else if (strcasecmp(key, "ODLPath") == 0) strncpy(cfg->odl_path, value, sizeof(cfg->odl_path) - 1);
@@ -125,6 +134,9 @@ int config_load(const char *conf_path, HgwConfig *cfg) {
     }
 
     fclose(f);
+    /* Guard against zero values that cause division by zero in the analyzer */
+    if (cfg->poll_interval_s == 0)      cfg->poll_interval_s = 5;
+    if (cfg->threshold_duration_s == 0) cfg->threshold_duration_s = 60;
     s_cfg = *cfg;
     strncpy(s_conf_path, path, sizeof(s_conf_path) - 1);
     LOG_INFO("Configuration loaded from %s", path);
