@@ -21,6 +21,9 @@
 #include <amxd/amxd_types.h>
 #include <amxd/amxd_dm.h>
 #include <amxd/amxd_object.h>
+#include <amxd/amxd_object_parameter.h>
+#include <amxd/amxd_object_action.h>
+#include <amxd/amxd_parameter_action.h>
 #include <amxd/amxd_transaction.h>
 #include <amxo/amxo.h>
 
@@ -160,6 +163,22 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
 
     /* Invoke entry-points declared in the ODL (loads shared library) */
     amxo_parser_invoke_entry_points(parser, dm, AMXO_START);
+
+    /* Register write-action callback on the four threshold parameters so the
+     * main loop can detect ACS/ubus changes via /tmp/hgw_cfg_changed.
+     * Done in C code (not ODL) to avoid the RTLD_LOCAL dlsym lookup failure
+     * that causes a NULL function-pointer call when %populate fires the action. */
+    static const char * const threshold_params[] = {
+        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval", NULL
+    };
+    amxd_object_t *hgwdoc = amxd_dm_findf(dm, "HGWDoctor.");
+    if (hgwdoc) {
+        for (int i = 0; threshold_params[i]; i++) {
+            amxd_param_t *p = amxd_object_get_param_def(hgwdoc, threshold_params[i]);
+            if (p)
+                amxd_param_add_action_cb(p, action_param_write, dm_on_param_changed, NULL);
+        }
+    }
 
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
@@ -423,14 +442,18 @@ bool datamodel_get_thresholds(uint32_t *cpu_pct, uint32_t *mem_pct,
 }
 
 /* -------------------------------------------------------------------------
- * Event handler: fires when any parameter under HGWDoctor.* changes.
- * Writes a trigger file; the main loop reads it and calls
- * datamodel_get_thresholds() to propagate the new values to running modules.
+ * Action callback: fires when a threshold parameter is written.
+ * Correct amxd_action_fn_t signature (6 args) — registered in C code after
+ * ODL parse to avoid the ODL auto-resolver RTLD_LOCAL lookup failure that
+ * caused a NULL-call segfault when on-action-write was in the ODL.
  * ------------------------------------------------------------------------- */
-amxd_status_t dm_on_param_changed(amxd_object_t *obj, amxd_function_t *fn,
-                                   amxc_var_t *args, amxc_var_t *ret) {
-    (void)obj; (void)fn; (void)args; (void)ret;
-    syslog(LOG_INFO, "Data model parameter changed — scheduling threshold propagation");
+static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
+                                          amxd_param_t* const param,
+                                          amxd_action_t reason,
+                                          const amxc_var_t* const args,
+                                          amxc_var_t* const retval,
+                                          void* priv) {
+    (void)object; (void)param; (void)reason; (void)args; (void)retval; (void)priv;
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
     if (f) fclose(f);
     return amxd_status_ok;

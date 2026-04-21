@@ -40,7 +40,5 @@ amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
                                 amxc_var_t *args, amxc_var_t *ret);
 amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
                              amxc_var_t *args, amxc_var_t *ret);
-amxd_status_t dm_on_param_changed(amxd_object_t *obj, amxd_function_t *fn,
-                                  amxc_var_t *args, amxc_var_t *ret);
 
 #endif /* HGW_DATAMODEL_H */

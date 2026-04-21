@@ -21,9 +21,6 @@ import "hgw_doctor.so" as "hgw_doctor";
 
     object HGWDoctor {
 
-        /* Fires on any writable-parameter write; main loop reads trigger file */
-        on action write call dm_on_param_changed;
-
         /* Global control */
         %persistent bool Enable = true;
         %read-only string Status = "Disabled";   /* "Enabled" | "Disabled" | "Error" */
@@ -54,8 +51,7 @@ import "hgw_doctor.so" as "hgw_doctor";
         %read-only datetime UploadTimestamp;
 
         /* Live statistics (RO) */
-        object Stats []{
-            
+        object Stats {
             %read-only uint32 CurrentCPUUsage = 0;
             %read-only uint32 CurrentMemUsage = 0;
             %read-only uint32 CurrentMemFreeKB = 0;
