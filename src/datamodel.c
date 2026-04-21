@@ -267,6 +267,7 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
 
     amxd_trans_t trans;
     amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
     amxd_trans_select_pathf(&trans, "%s", TR181_ANOMALY_LOG);
     amxd_trans_add_inst(&trans, 0, NULL);
 
