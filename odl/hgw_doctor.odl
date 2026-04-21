@@ -51,7 +51,16 @@ import "hgw_doctor.so" as "hgw_doctor";
         %read-only datetime UploadTimestamp;
 
         /* Live statistics (RO) */
-        object Stats {
+        object Stats []{
+            
+            %read-only uint32 CurrentCPUUsage = 0;
+            %read-only uint32 CurrentMemUsage = 0;
+            %read-only uint32 CurrentMemFreeKB = 0;
+            %read-only uint32 TotalRecoveryActions = 0;
+            %read-only uint32 TotalDiagUploads = 0;
+            %read-only uint32 UptimeSeconds = 0;
+        }
+        object SelfStats {
             %read-only uint32 CurrentCPUUsage = 0;
             %read-only uint32 CurrentMemUsage = 0;
             %read-only uint32 CurrentMemFreeKB = 0;
