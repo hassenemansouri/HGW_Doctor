@@ -13,6 +13,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
 #include <syslog.h>
 
 #include <amxc/amxc.h>
@@ -107,9 +108,7 @@ static void dm_set_param(const char *param_path, amxc_var_t *val) {
     amxd_trans_set_param(&trans, param_name, val);
     amxd_status_t st = amxd_trans_apply(&trans, s_dm);
     if (st != amxd_status_ok)
-        syslog(LOG_ERR, "dm_set_param FAILED %s status=%d", param_path, st);
-    else
-        syslog(LOG_DEBUG, "dm_set_param OK %s", param_path);
+        syslog(LOG_ERR, "Failed to set param %s (status=%d)", param_path, st);
     amxd_trans_clean(&trans);
 }
 
@@ -183,19 +182,10 @@ void datamodel_set_status(const char *status_str) {
 void datamodel_set_config(const char *process_list, uint32_t cpu_threshold,
                           uint32_t mem_threshold, uint32_t threshold_duration,
                           uint32_t poll_interval) {
-    if (!s_dm) {
-        syslog(LOG_ERR, "datamodel_set_config: s_dm is NULL");
-        return;
-    }
-    syslog(LOG_INFO, "datamodel_set_config: process_list='%s' cpu=%u mem=%u dur=%u poll=%u",
-           process_list ? process_list : "(null)",
-           cpu_threshold, mem_threshold, threshold_duration, poll_interval);
+    if (!s_dm) return;
 
-    if (process_list && process_list[0] != '\0') {
-        amxd_object_t *obj = amxd_dm_findf(s_dm, "HGWDoctor.");
-        syslog(LOG_INFO, "datamodel_set_config: obj=%p", (void*)obj);
+    if (process_list && process_list[0] != '\0')
         dm_set_string(TR181_PROCESS_LIST, process_list);
-    }
     dm_set_uint32(TR181_CPU_THRESHOLD, cpu_threshold);
     dm_set_uint32(TR181_MEM_THRESHOLD, mem_threshold);
     dm_set_uint32(TR181_THRESHOLD_DURATION, threshold_duration);
@@ -276,6 +266,7 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
     amxd_trans_set_value(cstring_t, &trans, "AnomalyType",
                          anomaly_type_to_string(event->type));
     amxd_trans_set_value(uint32_t, &trans, "MetricValue", event->metric_value);
+    amxd_trans_set_value(cstring_t, &trans, "ProcessName", event->process_name);
     amxd_trans_set_value(cstring_t, &trans, "ActionTaken",
                          action_taken ? action_taken : ACTSTR_NONE);
     amxd_trans_set_value(cstring_t, &trans, "ActionResult",
@@ -287,6 +278,69 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
 
 void datamodel_update_uptime(uint32_t uptime_s) {
     dm_set_uint32(TR181_STAT_UPTIME, uptime_s);
+}
+
+void datamodel_update_self_stats(void) {
+    /* CPU: read /proc/self/stat fields utime+stime, compare with previous call */
+    static unsigned long long prev_proc_ticks = 0;
+    static unsigned long long prev_total_ticks = 0;
+
+    FILE *f = fopen("/proc/self/stat", "r");
+    if (f) {
+        unsigned long utime = 0, stime = 0;
+        /* fields: pid(1) comm(2) state(3) ... utime(14) stime(15) */
+        int r = fscanf(f,
+            "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
+            &utime, &stime);
+        fclose(f);
+        if (r == 2) {
+            unsigned long long proc_ticks = (unsigned long long)utime + stime;
+            unsigned long long total_ticks = 0;
+            FILE *sf = fopen("/proc/stat", "r");
+            if (sf) {
+                unsigned long long u, n, s, i, iow, irq, sirq;
+                if (fscanf(sf, "cpu %llu %llu %llu %llu %llu %llu %llu",
+                           &u, &n, &s, &i, &iow, &irq, &sirq) == 7)
+                    total_ticks = u + n + s + i + iow + irq + sirq;
+                fclose(sf);
+            }
+            if (prev_total_ticks > 0 && total_ticks > prev_total_ticks) {
+                unsigned long long dt_proc  = proc_ticks  - prev_proc_ticks;
+                unsigned long long dt_total = total_ticks - prev_total_ticks;
+                uint32_t cpu_pct = (uint32_t)((dt_proc * 100ULL) / dt_total);
+                dm_set_uint32(TR181_SELF_CPU, cpu_pct);
+            }
+            prev_proc_ticks  = proc_ticks;
+            prev_total_ticks = total_ticks;
+        }
+    }
+
+    /* Memory: read /proc/self/status for VmRSS */
+    f = fopen("/proc/self/status", "r");
+    if (f) {
+        char line[128];
+        uint32_t vmrss_kb = 0;
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "VmRSS:", 6) == 0) {
+                sscanf(line + 6, "%u", &vmrss_kb);
+                break;
+            }
+        }
+        fclose(f);
+        if (vmrss_kb > 0) {
+            /* mem_pct: fraction of total system RAM */
+            uint32_t mem_total_kb = 0;
+            FILE *mi = fopen("/proc/meminfo", "r");
+            if (mi) {
+                fscanf(mi, "MemTotal: %u kB", &mem_total_kb);
+                fclose(mi);
+            }
+            uint32_t mem_pct = (mem_total_kb > 0)
+                ? (uint32_t)((vmrss_kb * 100ULL) / mem_total_kb) : 0;
+            dm_set_uint32(TR181_SELF_MEM,      mem_pct);
+            dm_set_uint32(TR181_SELF_MEM_FREE, vmrss_kb);
+        }
+    }
 }
 
 /* -------------------------------------------------------------------------

@@ -48,6 +48,11 @@
 #define TR181_STAT_TOTAL_UPLOADS  TR181_ROOT ".Stats.TotalDiagUploads"
 #define TR181_STAT_UPTIME         TR181_ROOT ".Stats.UptimeSeconds"
 
+/* ── Self stats (hgw-doctor own resource usage) ──────────────────────────── */
+#define TR181_SELF_CPU            TR181_ROOT ".SelfStats.CurrentCPUUsage"
+#define TR181_SELF_MEM            TR181_ROOT ".SelfStats.CurrentMemUsage"
+#define TR181_SELF_MEM_FREE       TR181_ROOT ".SelfStats.CurrentMemFreeKB"
+
 /* ── Profiles table ──────────────────────────────────────────────────────── */
 #define TR181_PROFILES            TR181_ROOT ".Profiles"
 

@@ -85,6 +85,7 @@ import "hgw_doctor.so" as "hgw_doctor";
             %read-only datetime Timestamp;
             %read-only string AnomalyType = "";   /* "CPU" | "Memory" | "Process" */
             %read-only uint32 MetricValue = 0;
+            %read-only string ProcessName = "";
             %read-only string ActionTaken = "";
             %read-only string ActionResult = "";
         }

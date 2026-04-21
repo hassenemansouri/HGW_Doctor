@@ -330,6 +330,7 @@ int main(int argc, char *argv[]) {
                                        snap.sys_mem_free_kb);
             }
             datamodel_update_uptime((uint32_t)(time(NULL) - start_time));
+            datamodel_update_self_stats();
         }
 
         /* Process ubus events */

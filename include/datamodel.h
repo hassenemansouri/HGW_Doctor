@@ -30,6 +30,7 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
                                   const char *action_taken,
                                   const char *action_result);
 void datamodel_update_uptime(uint32_t uptime_s);
+void datamodel_update_self_stats(void);
 bool datamodel_get_thresholds(uint32_t *cpu_pct, uint32_t *mem_pct,
                                uint32_t *duration_s, uint32_t *poll_s);
 
