@@ -218,17 +218,9 @@ void datamodel_set_status(const char *status_str) {
     syslog(LOG_INFO, "Status -> %s", status_str);
 }
 
-void datamodel_set_config(const char *process_list, uint32_t cpu_threshold,
-                          uint32_t mem_threshold, uint32_t threshold_duration,
-                          uint32_t poll_interval) {
-    if (!s_dm) return;
-
-    if (process_list && process_list[0] != '\0')
-        dm_set_string(TR181_PROCESS_LIST, process_list);
-    dm_set_uint32(TR181_CPU_THRESHOLD, cpu_threshold);
-    dm_set_uint32(TR181_MEM_THRESHOLD, mem_threshold);
-    dm_set_uint32(TR181_THRESHOLD_DURATION, threshold_duration);
-    dm_set_uint32(TR181_POLL_INTERVAL, poll_interval);
+void datamodel_set_process_list(const char *process_list) {
+    if (!s_dm || !process_list || process_list[0] == '\0') return;
+    dm_set_string(TR181_PROCESS_LIST, process_list);
 }
 
 void datamodel_update_stats(uint32_t cpu_pct, uint32_t mem_pct,

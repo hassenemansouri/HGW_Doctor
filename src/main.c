@@ -200,9 +200,7 @@ int main(int argc, char *argv[]) {
         if (i > 0) strncat(proc_list, ",", sizeof(proc_list) - strlen(proc_list) - 1);
         strncat(proc_list, cfg.process_names[i], sizeof(proc_list) - strlen(proc_list) - 1);
     }
-    datamodel_set_config(proc_list, cfg.cpu_threshold_pct,
-                         cfg.mem_threshold_pct, cfg.threshold_duration_s,
-                         cfg.poll_interval_s);
+    datamodel_set_process_list(proc_list);
 
     RecoveryConfig rcfg = {0};
     rcfg.action_type   = cfg.action_type;
@@ -255,17 +253,6 @@ int main(int argc, char *argv[]) {
             acfg.process_count        = cur->process_count;
             memcpy(acfg.process_names, cur->process_names, sizeof(acfg.process_names));
             analyzer_update_config(&acfg);
-            /* Sync updated config back to the data model so _get reflects reality */
-            char proc_list_buf[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME] = {0};
-            for (int i = 0; i < cur->process_count; i++) {
-                if (i > 0) strncat(proc_list_buf, ",",
-                                   sizeof(proc_list_buf) - strlen(proc_list_buf) - 1);
-                strncat(proc_list_buf, cur->process_names[i],
-                        sizeof(proc_list_buf) - strlen(proc_list_buf) - 1);
-            }
-            datamodel_set_config(proc_list_buf, cur->cpu_threshold_pct,
-                                 cur->mem_threshold_pct, cur->threshold_duration_s,
-                                 cur->poll_interval_s);
             LOG_INFO("Config reloaded and modules updated");
         }
         if (g_diag_req) {
