@@ -34,6 +34,13 @@
 /* -------------------------------------------------------------------------
  * Internal helpers
  * ------------------------------------------------------------------------- */
+static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
+                                          amxd_param_t* const param,
+                                          amxd_action_t reason,
+                                          const amxc_var_t* const args,
+                                          amxc_var_t* const retval,
+                                          void* priv);
+
 static amxd_dm_t         *s_dm = NULL;
 static _Atomic uint32_t   s_anomaly_count = 0;
 static _Atomic uint32_t   s_total_actions = 0;
