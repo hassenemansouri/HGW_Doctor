@@ -476,5 +476,9 @@ static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
     (void)object; (void)param; (void)reason; (void)args; (void)retval; (void)priv;
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
     if (f) fclose(f);
-    return amxd_status_ok;
+    /* Return function_not_implemented so amxd_dm_invoke_default() still runs
+     * the real amxd_action_param_write, which actually stores the new value.
+     * Returning ok here would mark the action as "handled" and skip the
+     * default write, leaving the parameter at its old value. */
+    return amxd_status_function_not_implemented;
 }
