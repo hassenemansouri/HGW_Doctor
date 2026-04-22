@@ -477,5 +477,5 @@ static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
     syslog(LOG_INFO, "dm_on_param_changed fired");
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
     if (f) fclose(f);
-    return amxd_status_ok;
+    return amxd_status_function_not_implemented;
 }
