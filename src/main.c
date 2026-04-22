@@ -163,8 +163,6 @@ int main(int argc, char *argv[]) {
     install_signals();
 
     /* 4. Ambiorix data model */
-    amxd_dm_init(&g_dm);
-    amxo_parser_init(&g_parser);
     if (datamodel_init(&g_dm, &g_parser, cfg.odl_path) != 0) {
         LOG_ERROR("Failed to initialise data model - aborting");
         return EXIT_FAILURE;

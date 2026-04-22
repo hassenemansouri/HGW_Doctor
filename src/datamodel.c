@@ -150,36 +150,49 @@ static void dm_set_datetime_now(const char *param_path) {
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
-    s_dm = dm;
     atomic_store(&s_anomaly_count, 0);
     atomic_store(&s_total_actions, 0);
     atomic_store(&s_total_uploads, 0);
 
+    syslog(LOG_INFO, "DEBUG DM: before dm init");
+    amxd_dm_init(dm);
+    syslog(LOG_INFO, "DEBUG DM: before parser init");
+    amxo_parser_init(parser);
+
+    s_dm = dm;
+
+    syslog(LOG_INFO, "DEBUG DM: before parse file odl=%s", odl_path ? odl_path : "(null)");
     int rc = amxo_parser_parse_file(parser, odl_path, amxd_dm_get_root(dm));
+    syslog(LOG_INFO, "DEBUG DM: after parse file rc=%d", rc);
     if (rc != 0) {
         syslog(LOG_ERR, "Failed to parse ODL file: %s (rc=%d)", odl_path, rc);
         return -1;
     }
 
-    /* Invoke entry-points declared in the ODL (loads shared library) */
+    syslog(LOG_INFO, "DEBUG DM: before entry points");
     amxo_parser_invoke_entry_points(parser, dm, AMXO_START);
+    syslog(LOG_INFO, "DEBUG DM: after entry points");
 
     /* Register write-action callback on the four threshold parameters so the
      * main loop can detect ACS/ubus changes via /tmp/hgw_cfg_changed.
      * Done in C code (not ODL) to avoid the RTLD_LOCAL dlsym lookup failure
      * that causes a NULL function-pointer call when %populate fires the action. */
+    syslog(LOG_INFO, "DEBUG DM: before param action cb");
     static const char * const threshold_params[] = {
         "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval", NULL
     };
     amxd_object_t *hgwdoc = amxd_dm_findf(dm, "HGWDoctor.");
+    syslog(LOG_INFO, "DEBUG DM: hgwdoc=%p", (void *)hgwdoc);
     if (hgwdoc) {
         for (int i = 0; threshold_params[i]; i++) {
             amxd_param_t *p = amxd_object_get_param_def(hgwdoc, threshold_params[i]);
+            syslog(LOG_INFO, "DEBUG DM: param %s p=%p", threshold_params[i], (void *)p);
             if (p)
                 amxd_param_add_action_cb(p, action_param_write, dm_on_param_changed, NULL);
         }
     }
 
+    syslog(LOG_INFO, "DEBUG DM: done");
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
 }
