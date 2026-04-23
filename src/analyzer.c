@@ -256,6 +256,7 @@ int analyzer_start(void) {
 void analyzer_stop(void) {
     s_stop = 1;
     pthread_join(s_thread, NULL);
+    pthread_mutex_destroy(&s_cfg_mutex);
 }
 
 void analyzer_update_config(const AnalyzerConfig *cfg) {

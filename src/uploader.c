@@ -20,7 +20,8 @@ static int                  s_thread_active = 0;
 static pthread_mutex_t      s_thread_mutex  = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
-    char path[HGW_MAX_PATH * 2];
+    char          path[HGW_MAX_PATH * 2];
+    UploaderConfig cfg;   /* snapshot taken at dispatch time — thread-safe */
 } UploadJob;
 
 static void *upload_thread_fn(void *arg) {
@@ -30,7 +31,7 @@ static void *upload_thread_fn(void *arg) {
     curl_mimepart *part;
     UploadStatus status = UPLOAD_STATUS_FAILED;
 
-    for (int attempt = 0; attempt <= (int)s_cfg.max_retries; ++attempt) {
+    for (int attempt = 0; attempt <= (int)job->cfg.max_retries; ++attempt) {
         CURLcode rc;
         long http_code = 0;
 
@@ -42,17 +43,17 @@ static void *upload_thread_fn(void *arg) {
         curl_mime_name(part, "file");
         curl_mime_filedata(part, job->path);
 
-        curl_easy_setopt(curl, CURLOPT_URL, s_cfg.url);
+        curl_easy_setopt(curl, CURLOPT_URL, job->cfg.url);
         curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)s_cfg.timeout_s);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)job->cfg.timeout_s);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "hgw-doctor/0.1");
 
-        if (!s_cfg.tls_verify) {
+        if (!job->cfg.tls_verify) {
             curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
             curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-        } else if (s_cfg.ca_cert_path[0] != '\0') {
-            curl_easy_setopt(curl, CURLOPT_CAINFO, s_cfg.ca_cert_path);
+        } else if (job->cfg.ca_cert_path[0] != '\0') {
+            curl_easy_setopt(curl, CURLOPT_CAINFO, job->cfg.ca_cert_path);
         }
 
         rc = curl_easy_perform(curl);
@@ -68,8 +69,8 @@ static void *upload_thread_fn(void *arg) {
 
         LOG_WARN("Upload attempt %d failed for %s (curl=%d http=%ld)",
                  attempt + 1, job->path, rc, http_code);
-        if (attempt < (int)s_cfg.max_retries && s_cfg.retry_delay_s > 0)
-            sleep(s_cfg.retry_delay_s);
+        if (attempt < (int)job->cfg.max_retries && job->cfg.retry_delay_s > 0)
+            sleep(job->cfg.retry_delay_s);
     }
 
     if (status == UPLOAD_STATUS_SUCCESS)
@@ -119,6 +120,7 @@ int uploader_send(const char *archive_path) {
     }
     strncpy(job->path, archive_path, sizeof(job->path) - 1);
     job->path[sizeof(job->path) - 1] = '\0';
+    job->cfg = s_cfg;  /* snapshot under mutex — thread reads job->cfg, never s_cfg */
 
     s_thread_active = 1;
     if (pthread_create(&s_upload_thread, NULL, upload_thread_fn, job) != 0) {
@@ -132,6 +134,15 @@ int uploader_send(const char *archive_path) {
 
     LOG_INFO("Upload started in background for %s", archive_path);
     return 0;
+}
+
+void uploader_update_url(const char *url) {
+    if (!url || url[0] == '\0') return;
+    pthread_mutex_lock(&s_thread_mutex);
+    strncpy(s_cfg.url, url, sizeof(s_cfg.url) - 1);
+    s_cfg.url[sizeof(s_cfg.url) - 1] = '\0';
+    pthread_mutex_unlock(&s_thread_mutex);
+    LOG_INFO("Upload URL updated to: %s", url);
 }
 
 void uploader_cleanup(void) {
@@ -149,4 +160,5 @@ void uploader_cleanup(void) {
     memset(&s_cfg, 0, sizeof(s_cfg));
     s_callback = NULL;
     s_userdata = NULL;
+    pthread_mutex_destroy(&s_thread_mutex);
 }

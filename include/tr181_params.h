@@ -35,6 +35,7 @@
 
 /* ── Diagnostics ─────────────────────────────────────────────────────────── */
 #define TR181_ON_DEMAND_TRIGGER   TR181_ROOT ".OnDemandTrigger"
+#define TR181_DIAG_OUTPUT_DIR     TR181_ROOT ".DiagOutputDir"
 #define TR181_DIAG_ARCHIVE_PATH   TR181_ROOT ".DiagArchivePath"
 #define TR181_UPLOAD_URL          TR181_ROOT ".UploadURL"
 #define TR181_UPLOAD_STATUS       TR181_ROOT ".UploadStatus"

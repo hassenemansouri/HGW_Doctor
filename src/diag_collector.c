@@ -16,6 +16,7 @@
 static DiagConfig         s_cfg;
 static diag_done_callback s_callback = NULL;
 static void              *s_userdata = NULL;
+static pthread_mutex_t    s_cfg_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static _Atomic int  s_diag_active = ATOMIC_VAR_INIT(0);
 static pthread_t    s_diag_thread;
@@ -23,6 +24,7 @@ static pthread_t    s_diag_thread;
 typedef struct {
     AnomalyEvent event;
     int          has_event;
+    DiagConfig   cfg;    /* snapshot at dispatch — safe against concurrent update_output_dir */
 } DiagArg;
 static DiagArg s_diag_arg;
 
@@ -152,7 +154,7 @@ static void write_event_file(const char *path, const AnomalyEvent *event) {
     fclose(f);
 }
 
-static void prune_archives(void) {
+static void prune_archives(const char *output_dir, uint32_t max_archives) {
     DIR *dir;
     struct dirent *entry;
     struct {
@@ -161,9 +163,9 @@ static void prune_archives(void) {
     } archives[64];
     size_t count = 0;
 
-    if (s_cfg.max_archives == 0) return;
+    if (max_archives == 0) return;
 
-    dir = opendir(s_cfg.output_dir);
+    dir = opendir(output_dir);
     if (!dir) return;
 
     while ((entry = readdir(dir)) != NULL && count < 64) {
@@ -173,7 +175,7 @@ static void prune_archives(void) {
         if (entry->d_name[0] == '.') continue;
         if (!strstr(entry->d_name, ".tar.gz")) continue;
 
-        if (join_path(full_path, sizeof(full_path), s_cfg.output_dir, entry->d_name) != 0) {
+        if (join_path(full_path, sizeof(full_path), output_dir, entry->d_name) != 0) {
             continue;
         }
         if (stat(full_path, &st) != 0) continue;
@@ -194,7 +196,7 @@ static void prune_archives(void) {
         }
     }
 
-    for (size_t i = s_cfg.max_archives; i < count; ++i) {
+    for (size_t i = max_archives; i < count; ++i) {
         unlink(archives[i].path);
     }
 }
@@ -208,7 +210,9 @@ int diag_collector_init(const DiagConfig *cfg, diag_done_callback cb, void *user
     return ensure_dir(s_cfg.output_dir);
 }
 
-static int diag_collect_sync(const AnomalyEvent *event) {
+static int diag_collect_sync(const DiagArg *a) {
+    const char *output_dir = a->cfg.output_dir;
+    const AnomalyEvent *event = a->has_event ? &a->event : NULL;
     char timestamp[32];
     char dir_name[64];
     char archive_name[64];
@@ -223,15 +227,15 @@ static int diag_collect_sync(const AnomalyEvent *event) {
     time_t now = time(NULL);
     struct tm tm_info;
 
-    if (ensure_dir(s_cfg.output_dir) != 0) return -1;
+    if (ensure_dir(output_dir) != 0) return -1;
 
     localtime_r(&now, &tm_info);
     strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &tm_info);
 
     snprintf(dir_name, sizeof(dir_name), "diag_%s.d", timestamp);
     snprintf(archive_name, sizeof(archive_name), "diag_%s.tar.gz", timestamp);
-    if (join_path(temp_dir, sizeof(temp_dir), s_cfg.output_dir, dir_name) != 0) return -1;
-    if (join_path(archive_path, sizeof(archive_path), s_cfg.output_dir, archive_name) != 0) return -1;
+    if (join_path(temp_dir, sizeof(temp_dir), output_dir, dir_name) != 0) return -1;
+    if (join_path(archive_path, sizeof(archive_path), output_dir, archive_name) != 0) return -1;
 
     if (ensure_dir(temp_dir) != 0) return -1;
 
@@ -260,15 +264,14 @@ static int diag_collect_sync(const AnomalyEvent *event) {
     snprintf(command, sizeof(command), "rm -rf '%s'", temp_dir);
     (void) run_shell_command(command, 0);
 
-    prune_archives();
+    prune_archives(output_dir, a->cfg.max_archives);
     LOG_INFO("Diagnostics collected into %s", archive_path);
     if (s_callback) s_callback(archive_path, s_userdata);
     return 0;
 }
 
 static void *diag_thread_fn(void *arg) {
-    DiagArg *a = (DiagArg *)arg;
-    diag_collect_sync(a->has_event ? &a->event : NULL);
+    diag_collect_sync((DiagArg *)arg);
     atomic_store(&s_diag_active, 0);
     return NULL;
 }
@@ -281,6 +284,9 @@ int diag_collect(const AnomalyEvent *event) {
     }
     s_diag_arg.has_event = (event != NULL);
     if (event) s_diag_arg.event = *event;
+    pthread_mutex_lock(&s_cfg_mutex);
+    s_diag_arg.cfg = s_cfg;   /* snapshot — thread uses this, never touches s_cfg */
+    pthread_mutex_unlock(&s_cfg_mutex);
 
     if (pthread_create(&s_diag_thread, NULL, diag_thread_fn, &s_diag_arg) != 0) {
         atomic_store(&s_diag_active, 0);
@@ -291,6 +297,15 @@ int diag_collect(const AnomalyEvent *event) {
     return 0;
 }
 
+void diag_collector_update_output_dir(const char *path) {
+    if (!path || path[0] == '\0') return;
+    pthread_mutex_lock(&s_cfg_mutex);
+    strncpy(s_cfg.output_dir, path, sizeof(s_cfg.output_dir) - 1);
+    s_cfg.output_dir[sizeof(s_cfg.output_dir) - 1] = '\0';
+    pthread_mutex_unlock(&s_cfg_mutex);
+    LOG_INFO("Diag output directory updated to: %s", path);
+}
+
 void diag_collector_cleanup(void) {
     /* Wait up to 30s for any in-flight collection to finish */
     for (int i = 0; i < 300 && atomic_load(&s_diag_active); i++)
@@ -298,4 +313,5 @@ void diag_collector_cleanup(void) {
     memset(&s_cfg, 0, sizeof(s_cfg));
     s_callback = NULL;
     s_userdata = NULL;
+    pthread_mutex_destroy(&s_cfg_mutex);
 }

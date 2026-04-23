@@ -45,6 +45,7 @@ import "hgw_doctor.so" as "hgw_doctor";
 
         /* Diagnostics & upload */
         bool OnDemandTrigger = false;   /* write true to trigger on-demand collection */
+        %persistent string DiagOutputDir = "/tmp/hgw_diag";
         %read-only string DiagArchivePath = "";
         %persistent string UploadURL = "";
         %read-only string UploadStatus = "None";
@@ -63,9 +64,6 @@ import "hgw_doctor.so" as "hgw_doctor";
             %read-only uint32 CurrentCPUUsage = 0;
             %read-only uint32 CurrentMemUsage = 0;
             %read-only uint32 CurrentMemFreeKB = 0;
-            %read-only uint32 TotalRecoveryActions = 0;
-            %read-only uint32 TotalDiagUploads = 0;
-            %read-only uint32 UptimeSeconds = 0;
         }
 
         /* Monitoring profiles — path: HGWDoctor.Profiles.{i}. */

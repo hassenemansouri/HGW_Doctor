@@ -4,6 +4,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <pthread.h>
 
 #include "logger.h"
 #include "recovery.h"
@@ -11,6 +12,14 @@
 static RecoveryConfig    s_cfg;
 static recovery_callback s_callback = NULL;
 static void             *s_userdata = NULL;
+static pthread_mutex_t   s_cfg_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct {
+    AnomalyEvent      event;
+    RecoveryConfig    cfg;
+    recovery_callback callback;
+    void             *userdata;
+} RecoveryTask;
 
 static void copy_string(char *dst, size_t dst_size, const char *src) {
     size_t len;
@@ -56,13 +65,13 @@ static int run_command(const char *command) {
     return -1;
 }
 
-static int run_action_script(const char *script_name, const char *arg) {
+static int run_action_script(const char *scripts_dir, const char *script_name, const char *arg) {
     char script_path[HGW_MAX_PATH * 2];
     char command[HGW_MAX_PATH * 4];
 
-    if (s_cfg.scripts_dir[0] == '\0') return -1;
+    if (!scripts_dir || scripts_dir[0] == '\0') return -1;
 
-    if (join_path(script_path, sizeof(script_path), s_cfg.scripts_dir, script_name) != 0) {
+    if (join_path(script_path, sizeof(script_path), scripts_dir, script_name) != 0) {
         return -1;
     }
     if (access(script_path, X_OK) != 0) return -1;
@@ -76,13 +85,13 @@ static int run_action_script(const char *script_name, const char *arg) {
     return run_command(command);
 }
 
-static int do_process_restart(const char *proc_name) {
+static int do_process_restart(const char *scripts_dir, const char *proc_name) {
     char command[HGW_MAX_PATH * 4];
     int rc;
 
     if (!proc_name || proc_name[0] == '\0') return -1;
 
-    rc = run_action_script("restart_process.sh", proc_name);
+    rc = run_action_script(scripts_dir, "restart_process.sh", proc_name);
     if (rc == 0) return 0;
 
     snprintf(command, sizeof(command),
@@ -91,14 +100,14 @@ static int do_process_restart(const char *proc_name) {
     return run_command(command);
 }
 
-static int do_cache_clear(void) {
-    int rc = run_action_script("clear_cache.sh", NULL);
+static int do_cache_clear(const char *scripts_dir) {
+    int rc = run_action_script(scripts_dir, "clear_cache.sh", NULL);
     if (rc == 0) return 0;
     return run_command("sh -c \"sync; echo 3 > /proc/sys/vm/drop_caches\"");
 }
 
-static int do_reboot(void) {
-    int rc = run_action_script("reboot_system.sh", NULL);
+static int do_reboot(const char *scripts_dir) {
+    int rc = run_action_script(scripts_dir, "reboot_system.sh", NULL);
     if (rc == 0) return 0;
 
     /* Follow PrplOS pattern: call Device.Reboot() via ubus if available,
@@ -108,6 +117,61 @@ static int do_reboot(void) {
 
     if (access("/sbin/reboot", X_OK) == 0) return run_command("/sbin/reboot");
     return run_command("reboot");
+}
+
+static void *recovery_run(void *arg) {
+    RecoveryTask   *task = (RecoveryTask *)arg;
+    const AnomalyEvent *event = &task->event;
+    RecoveryResult  result = {0};
+
+    ActionType action;
+    if (event->type == ANOMALY_PROCESS ||
+        event->type == ANOMALY_PROCESS_CPU ||
+        event->type == ANOMALY_PROCESS_MEM)
+        action = ACTION_PROCESS_RESTART;
+    else if (event->type == ANOMALY_CPU || event->type == ANOMALY_MEMORY)
+        action = (task->cfg.action_type == ACTION_PROCESS_RESTART) ? ACTION_CACHE_CLEAR : task->cfg.action_type;
+    else
+        action = task->cfg.action_type;
+    result.action = action;
+    result.result = RESULT_NONE;
+    result.exit_code = 0;
+    clock_gettime(CLOCK_REALTIME, &result.executed_at);
+    copy_string(result.process_name, sizeof(result.process_name),
+                (event->process_name[0] != '\0') ? event->process_name
+                : (task->cfg.process_count > 0 ? task->cfg.process_names[0] : ""));
+
+    /* For process restart: prefer the specific process reported by the event,
+     * fall back to the first configured process name. */
+    const char *restart_target = (event->process_name[0] != '\0')
+                                 ? event->process_name
+                                 : (task->cfg.process_count > 0 ? task->cfg.process_names[0] : "");
+
+    switch (action) {
+        case ACTION_PROCESS_RESTART:
+            result.exit_code = do_process_restart(task->cfg.scripts_dir, restart_target);
+            result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
+            break;
+        case ACTION_CACHE_CLEAR:
+            result.exit_code = do_cache_clear(task->cfg.scripts_dir);
+            result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
+            break;
+        case ACTION_REBOOT:
+            result.exit_code = do_reboot(task->cfg.scripts_dir);
+            result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
+            break;
+        case ACTION_NONE:
+        default:
+            result.result = RESULT_NONE;
+            break;
+    }
+
+    LOG_INFO("Recovery done: action=%d result=%d exit=%d",
+             result.action, result.result, result.exit_code);
+
+    if (task->callback) task->callback(&result, task->userdata);
+    free(task);
+    return NULL;
 }
 
 int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdata) {
@@ -120,59 +184,44 @@ int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdat
 }
 
 int recovery_dispatch(const AnomalyEvent *event) {
-    RecoveryResult result = {0};
+    RecoveryTask *task = malloc(sizeof(*task));
+    if (!task) return -1;
 
-    ActionType action;
-    if (event->type == ANOMALY_PROCESS ||
-        event->type == ANOMALY_PROCESS_CPU ||
-        event->type == ANOMALY_PROCESS_MEM)
-        action = ACTION_PROCESS_RESTART;
-    else if (event->type == ANOMALY_CPU || event->type == ANOMALY_MEMORY)
-        action = (s_cfg.action_type == ACTION_PROCESS_RESTART) ? ACTION_CACHE_CLEAR : s_cfg.action_type;
-    else
-        action = s_cfg.action_type;
-    result.action = action;
-    result.result = RESULT_NONE;
-    result.exit_code = 0;
-    clock_gettime(CLOCK_REALTIME, &result.executed_at);
-    copy_string(result.process_name, sizeof(result.process_name),
-                (event->process_name[0] != '\0') ? event->process_name
-                : (s_cfg.process_count > 0 ? s_cfg.process_names[0] : ""));
+    task->event = *event;
+    pthread_mutex_lock(&s_cfg_mutex);
+    task->cfg      = s_cfg;
+    task->callback = s_callback;
+    task->userdata = s_userdata;
+    pthread_mutex_unlock(&s_cfg_mutex);
 
-    /* For process restart: prefer the specific process reported by the event,
-     * fall back to the first configured process name. */
-    const char *restart_target = (event->process_name[0] != '\0')
-                                 ? event->process_name
-                                 : (s_cfg.process_count > 0 ? s_cfg.process_names[0] : "");
-
-    switch (action) {
-        case ACTION_PROCESS_RESTART:
-            result.exit_code = do_process_restart(restart_target);
-            result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
-            break;
-        case ACTION_CACHE_CLEAR:
-            result.exit_code = do_cache_clear();
-            result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
-            break;
-        case ACTION_REBOOT:
-            result.exit_code = do_reboot();
-            result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
-            break;
-        case ACTION_NONE:
-        default:
-            result.result = RESULT_NONE;
-            break;
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&t, &attr, recovery_run, task);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        free(task);
+        return -1;
     }
+    return 0;
+}
 
-    LOG_INFO("Recovery dispatched: action=%d result=%d exit=%d",
-             result.action, result.result, result.exit_code);
-
-    if (s_callback) s_callback(&result, s_userdata);
-    return (result.result == RESULT_FAILURE) ? -1 : 0;
+void recovery_update_config(const RecoveryConfig *cfg) {
+    if (!cfg) return;
+    pthread_mutex_lock(&s_cfg_mutex);
+    s_cfg.action_type   = cfg->action_type;
+    s_cfg.process_count = cfg->process_count;
+    memcpy(s_cfg.process_names, cfg->process_names, sizeof(s_cfg.process_names));
+    /* scripts_dir is host-side config, not exposed via DM — leave unchanged */
+    pthread_mutex_unlock(&s_cfg_mutex);
+    LOG_INFO("Recovery config updated: action=%d processes=%d",
+             cfg->action_type, cfg->process_count);
 }
 
 void recovery_cleanup(void) {
     memset(&s_cfg, 0, sizeof(s_cfg));
     s_callback = NULL;
     s_userdata = NULL;
+    pthread_mutex_destroy(&s_cfg_mutex);
 }

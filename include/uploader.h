@@ -19,6 +19,7 @@ typedef void (*upload_done_callback)(UploadStatus status, const char *path,
 
 int uploader_init(const UploaderConfig *cfg, upload_done_callback cb, void *userdata);
 int uploader_send(const char *archive_path);
+void uploader_update_url(const char *url);
 void uploader_cleanup(void);
 
 #endif /* HGW_UPLOADER_H */

@@ -40,6 +40,12 @@ static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
                                           const amxc_var_t* const args,
                                           amxc_var_t* const retval,
                                           void* priv);
+static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
+                                          amxd_param_t* const param,
+                                          amxd_action_t reason,
+                                          const amxc_var_t* const args,
+                                          amxc_var_t* const retval,
+                                          void* priv);
 
 static amxd_dm_t         *s_dm = NULL;
 static _Atomic uint32_t   s_anomaly_count = 0;
@@ -161,45 +167,39 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_total_actions, 0);
     atomic_store(&s_total_uploads, 0);
 
-    syslog(LOG_INFO, "DEBUG DM: before dm init");
     amxd_dm_init(dm);
-    syslog(LOG_INFO, "DEBUG DM: before parser init");
     amxo_parser_init(parser);
-
     s_dm = dm;
 
-    syslog(LOG_INFO, "DEBUG DM: before parse file odl=%s", odl_path ? odl_path : "(null)");
     int rc = amxo_parser_parse_file(parser, odl_path, amxd_dm_get_root(dm));
-    syslog(LOG_INFO, "DEBUG DM: after parse file rc=%d", rc);
     if (rc != 0) {
         syslog(LOG_ERR, "Failed to parse ODL file: %s (rc=%d)", odl_path, rc);
         return -1;
     }
-
-    syslog(LOG_INFO, "DEBUG DM: before entry points");
     amxo_parser_invoke_entry_points(parser, dm, AMXO_START);
-    syslog(LOG_INFO, "DEBUG DM: after entry points");
 
-    /* Register write-action callback on the four threshold parameters so the
-     * main loop can detect ACS/ubus changes via /tmp/hgw_cfg_changed.
-     * Done in C code (not ODL) to avoid the RTLD_LOCAL dlsym lookup failure
-     * that causes a NULL function-pointer call when %populate fires the action. */
-    syslog(LOG_INFO, "DEBUG DM: before param action cb");
-    static const char * const threshold_params[] = {
-        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval", NULL
-    };
+    /* Register write-action callbacks in C (not ODL) to avoid the RTLD_LOCAL
+     * dlsym lookup failure that causes a NULL call when %populate fires the action. */
     amxd_object_t *hgwdoc = amxd_dm_findf(dm, "HGWDoctor.");
-    syslog(LOG_INFO, "DEBUG DM: hgwdoc=%p", (void *)hgwdoc);
     if (hgwdoc) {
-        for (int i = 0; threshold_params[i]; i++) {
-            amxd_param_t *p = amxd_object_get_param_def(hgwdoc, threshold_params[i]);
-            syslog(LOG_INFO, "DEBUG DM: param %s p=%p", threshold_params[i], (void *)p);
+        /* Params that signal the main loop via /tmp/hgw_cfg_changed */
+        static const char * const cfg_params[] = {
+            "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
+            "ActionType", "ProcessList", "UploadURL", "DiagOutputDir", "Enable",
+            NULL
+        };
+        for (int i = 0; cfg_params[i]; i++) {
+            amxd_param_t *p = amxd_object_get_param_def(hgwdoc, cfg_params[i]);
             if (p)
                 amxd_param_add_action_cb(p, action_param_write, dm_on_param_changed, NULL);
         }
+
+        /* OnDemandTrigger: writing true kicks off a diagnostic collection */
+        amxd_param_t *trigger = amxd_object_get_param_def(hgwdoc, "OnDemandTrigger");
+        if (trigger)
+            amxd_param_add_action_cb(trigger, action_param_write, dm_on_trigger_write, NULL);
     }
 
-    syslog(LOG_INFO, "DEBUG DM: done");
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
 }
@@ -221,6 +221,13 @@ void datamodel_set_status(const char *status_str) {
 void datamodel_set_process_list(const char *process_list) {
     if (!s_dm || !process_list || process_list[0] == '\0') return;
     dm_set_string(TR181_PROCESS_LIST, process_list);
+}
+
+void datamodel_sync_startup(const char *action_type, const char *upload_url,
+                             const char *diag_output_dir) {
+    if (action_type    && action_type[0])    dm_set_string(TR181_ACTION_TYPE,     action_type);
+    if (upload_url     && upload_url[0])     dm_set_string(TR181_UPLOAD_URL,      upload_url);
+    if (diag_output_dir && diag_output_dir[0]) dm_set_string(TR181_DIAG_OUTPUT_DIR, diag_output_dir);
 }
 
 void datamodel_update_stats(uint32_t cpu_pct, uint32_t mem_pct,
@@ -283,8 +290,32 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
                                   const char *action_result) {
     char timestamp[32];
 
-    /* Add instance to AnomalyLog multi-instance object */
     if (!s_dm || !event) return;
+
+    /* Enforce HGW_ANOMALY_LOG_MAX cap — delete oldest instance when full */
+    amxd_object_t *log_obj = amxd_dm_findf(s_dm, "%s", TR181_ANOMALY_LOG);
+    if (log_obj) {
+        uint32_t count = 0;
+        uint32_t oldest_idx = 0;
+        bool have_oldest = false;
+        amxd_object_for_each(instance, it, log_obj) {
+            amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+            if (!have_oldest) {
+                oldest_idx = amxd_object_get_index(inst);
+                have_oldest = true;
+            }
+            count++;
+        }
+        if (count >= HGW_ANOMALY_LOG_MAX && have_oldest) {
+            amxd_trans_t del_trans;
+            amxd_trans_init(&del_trans);
+            amxd_trans_set_attr(&del_trans, amxd_tattr_change_ro, true);
+            amxd_trans_select_object(&del_trans, log_obj);
+            amxd_trans_del_inst(&del_trans, oldest_idx, NULL);
+            amxd_trans_apply(&del_trans, s_dm);
+            amxd_trans_clean(&del_trans);
+        }
+    }
 
     amxd_trans_t trans;
     amxd_trans_init(&trans);
@@ -400,6 +431,31 @@ amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
     dm_set_uint32(TR181_ANOMALY_COUNT,      0);
     dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, 0);
     dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, 0);
+
+    /* Clear all AnomalyLog instances — collect indices first, then delete */
+    if (s_dm) {
+        amxd_object_t *log_obj = amxd_dm_findf(s_dm, "%s", TR181_ANOMALY_LOG);
+        if (log_obj) {
+            uint32_t indices[HGW_ANOMALY_LOG_MAX];
+            size_t n = 0;
+            amxd_object_for_each(instance, it, log_obj) {
+                amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+                if (n < HGW_ANOMALY_LOG_MAX)
+                    indices[n++] = amxd_object_get_index(inst);
+            }
+            if (n > 0) {
+                amxd_trans_t del_trans;
+                amxd_trans_init(&del_trans);
+                amxd_trans_set_attr(&del_trans, amxd_tattr_change_ro, true);
+                amxd_trans_select_object(&del_trans, log_obj);
+                for (size_t i = 0; i < n; i++)
+                    amxd_trans_del_inst(&del_trans, indices[i], NULL);
+                amxd_trans_apply(&del_trans, s_dm);
+                amxd_trans_clean(&del_trans);
+            }
+        }
+    }
+
     syslog(LOG_INFO, "Counters reset via RPC");
     return amxd_status_ok;
 }
@@ -408,56 +464,152 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
                               amxc_var_t *args, amxc_var_t *ret) {
     (void)obj; (void)fn;
     const char *profile_name = GET_CHAR(args, "ProfileName");
-    if (!profile_name) {
+    if (!profile_name || profile_name[0] == '\0') {
         amxc_var_set(int32_t, ret, -1);
         return amxd_status_invalid_value;
     }
-    /* Validate profile exists in Profiles table, then set active Profile param */
+    if (!s_dm) {
+        amxc_var_set(int32_t, ret, -1);
+        return amxd_status_unknown_error;
+    }
+
+    /* Find matching profile instance by Name key */
+    amxd_object_t *profiles = amxd_dm_findf(s_dm, "%s", TR181_PROFILES);
+    if (!profiles) {
+        syslog(LOG_ERR, "SetProfile: Profiles table not found");
+        amxc_var_set(int32_t, ret, -1);
+        return amxd_status_object_not_found;
+    }
+
+    amxd_object_t *found = NULL;
+    amxc_var_t     name_var;
+    amxc_var_init(&name_var);
+    amxd_object_for_each(instance, it, profiles) {
+        amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+        if (amxd_object_get_param(inst, "Name", &name_var) == amxd_status_ok) {
+            const char *n = amxc_var_constcast(cstring_t, &name_var);
+            if (n && strcmp(n, profile_name) == 0) {
+                found = inst;
+                break;
+            }
+        }
+    }
+    amxc_var_clean(&name_var);
+
+    if (!found) {
+        syslog(LOG_WARNING, "SetProfile: profile '%s' not found", profile_name);
+        amxc_var_set(int32_t, ret, -1);
+        return amxd_status_object_not_found;
+    }
+
+    /* Copy profile parameters onto the HGWDoctor root object */
+    amxd_object_t *root = amxd_dm_findf(s_dm, "HGWDoctor.");
+    if (!root) {
+        amxc_var_set(int32_t, ret, -1);
+        return amxd_status_unknown_error;
+    }
+
+    static const char * const profile_params[] = {
+        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval", "ActionType",
+        NULL
+    };
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_select_object(&trans, root);
+    amxc_var_t pval;
+    amxc_var_init(&pval);
+    for (int i = 0; profile_params[i]; i++) {
+        if (amxd_object_get_param(found, profile_params[i], &pval) == amxd_status_ok)
+            amxd_trans_set_param(&trans, profile_params[i], &pval);
+    }
+    amxc_var_clean(&pval);
+
+    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
+    amxd_trans_clean(&trans);
+    if (st != amxd_status_ok) {
+        syslog(LOG_ERR, "SetProfile: failed to apply profile '%s' (status=%d)",
+               profile_name, st);
+        amxc_var_set(int32_t, ret, -1);
+        return st;
+    }
+
     dm_set_string(TR181_PROFILE, profile_name);
-    syslog(LOG_INFO, "Active profile set to '%s' via RPC", profile_name);
+
+    /* Signal main loop to propagate the new param values to running modules */
+    FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
+    if (f) fclose(f);
+
+    syslog(LOG_INFO, "Profile '%s' activated", profile_name);
     amxc_var_set(int32_t, ret, 0);
     return amxd_status_ok;
 }
 
 /* -------------------------------------------------------------------------
- * Read current threshold params from the live data model.
- * Called by the main loop after dm_on_param_changed fires.
+ * Read all writable DM parameters back into a DmConfig snapshot.
+ * Called by the main loop after dm_on_param_changed fires so that every
+ * write via ACS or ubus is immediately reflected in the running daemon.
  * ------------------------------------------------------------------------- */
-bool datamodel_get_thresholds(uint32_t *cpu_pct, uint32_t *mem_pct,
-                               uint32_t *duration_s, uint32_t *poll_s) {
+bool datamodel_get_config(DmConfig *out) {
     char object_path[HGW_MAX_PATH];
     char param_name[HGW_MAX_PROC_NAME];
     amxc_var_t val;
     amxd_object_t *obj;
 
-    if (!s_dm || !cpu_pct || !mem_pct || !duration_s || !poll_s) return false;
-
+    if (!s_dm || !out) return false;
+    memset(out, 0, sizeof(*out));
     amxc_var_init(&val);
 
-#define DM_READ_U32(path, out) do { \
+#define DM_READ_U32(path, field) do { \
     if (dm_split_path((path), object_path, sizeof(object_path), \
                       param_name, sizeof(param_name)) == 0) { \
         obj = amxd_dm_findf(s_dm, "%s", object_path); \
         if (obj && amxd_object_get_param(obj, param_name, &val) == amxd_status_ok) \
-            *(out) = amxc_var_dyncast(uint32_t, &val); \
+            (field) = amxc_var_dyncast(uint32_t, &val); \
     } \
 } while (0)
 
-    DM_READ_U32(TR181_CPU_THRESHOLD,      cpu_pct);
-    DM_READ_U32(TR181_MEM_THRESHOLD,      mem_pct);
-    DM_READ_U32(TR181_THRESHOLD_DURATION, duration_s);
-    DM_READ_U32(TR181_POLL_INTERVAL,      poll_s);
+#define DM_READ_STR(path, field, size) do { \
+    if (dm_split_path((path), object_path, sizeof(object_path), \
+                      param_name, sizeof(param_name)) == 0) { \
+        obj = amxd_dm_findf(s_dm, "%s", object_path); \
+        if (obj && amxd_object_get_param(obj, param_name, &val) == amxd_status_ok) { \
+            const char *s = amxc_var_constcast(cstring_t, &val); \
+            if (s) strncpy((field), s, (size) - 1); \
+        } \
+    } \
+} while (0)
+
+    DM_READ_U32(TR181_CPU_THRESHOLD,      out->cpu_threshold_pct);
+    DM_READ_U32(TR181_MEM_THRESHOLD,      out->mem_threshold_pct);
+    DM_READ_U32(TR181_THRESHOLD_DURATION, out->threshold_duration_s);
+    DM_READ_U32(TR181_POLL_INTERVAL,      out->poll_interval_s);
+    DM_READ_STR(TR181_ACTION_TYPE,        out->action_type,      sizeof(out->action_type));
+    DM_READ_STR(TR181_PROCESS_LIST,       out->process_list,     sizeof(out->process_list));
+    DM_READ_STR(TR181_UPLOAD_URL,         out->upload_url,       sizeof(out->upload_url));
+    DM_READ_STR(TR181_DIAG_OUTPUT_DIR,    out->diag_output_dir,  sizeof(out->diag_output_dir));
+
+    /* Enable */
+    if (dm_split_path(TR181_ENABLE, object_path, sizeof(object_path),
+                      param_name, sizeof(param_name)) == 0) {
+        obj = amxd_dm_findf(s_dm, "%s", object_path);
+        if (obj && amxd_object_get_param(obj, param_name, &val) == amxd_status_ok)
+            out->enable = amxc_var_dyncast(bool, &val);
+        else
+            out->enable = true;
+    }
 
 #undef DM_READ_U32
+#undef DM_READ_STR
     amxc_var_clean(&val);
     return true;
 }
 
 /* -------------------------------------------------------------------------
- * Action callback: fires when a threshold parameter is written.
- * Correct amxd_action_fn_t signature (6 args) — registered in C code after
- * ODL parse to avoid the ODL auto-resolver RTLD_LOCAL lookup failure that
- * caused a NULL-call segfault when on-action-write was in the ODL.
+ * Action callbacks — registered in C code after ODL parse to avoid the
+ * RTLD_LOCAL dlsym lookup failure that caused a NULL-call segfault when
+ * on-action-write was declared in the ODL.
+ * Both return amxd_status_function_not_implemented so the default write
+ * action still runs and the parameter value is actually updated in the DM.
  * ------------------------------------------------------------------------- */
 static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
                                           amxd_param_t* const param,
@@ -466,8 +618,23 @@ static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
                                           amxc_var_t* const retval,
                                           void* priv) {
     (void)object; (void)param; (void)reason; (void)args; (void)retval; (void)priv;
-    syslog(LOG_INFO, "dm_on_param_changed fired");
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
     if (f) fclose(f);
+    return amxd_status_function_not_implemented;
+}
+
+static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
+                                          amxd_param_t* const param,
+                                          amxd_action_t reason,
+                                          const amxc_var_t* const args,
+                                          amxc_var_t* const retval,
+                                          void* priv) {
+    (void)object; (void)param; (void)reason; (void)retval; (void)priv;
+    /* Signal the main loop to collect diagnostics — but only when written true */
+    bool trigger = args ? GET_BOOL(args, "value") : false;
+    if (trigger) {
+        FILE *f = fopen("/tmp/hgw_diag_trigger", "w");
+        if (f) fclose(f);
+    }
     return amxd_status_function_not_implemented;
 }

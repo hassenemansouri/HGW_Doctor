@@ -14,6 +14,19 @@
 
 #include "types.h"
 
+/* All writable DM parameters, read back after ACS/ubus writes them */
+typedef struct {
+    uint32_t cpu_threshold_pct;
+    uint32_t mem_threshold_pct;
+    uint32_t threshold_duration_s;
+    uint32_t poll_interval_s;
+    char     action_type[32];
+    char     process_list[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME];
+    char     upload_url[HGW_MAX_URL];
+    char     diag_output_dir[HGW_MAX_PATH];
+    bool     enable;
+} DmConfig;
+
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path);
 void datamodel_cleanup(amxd_dm_t *dm, amxo_parser_t *parser);
 
@@ -29,8 +42,9 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
                                   const char *action_result);
 void datamodel_update_uptime(uint32_t uptime_s);
 void datamodel_update_self_stats(void);
-bool datamodel_get_thresholds(uint32_t *cpu_pct, uint32_t *mem_pct,
-                               uint32_t *duration_s, uint32_t *poll_s);
+bool datamodel_get_config(DmConfig *out);
+void datamodel_sync_startup(const char *action_type, const char *upload_url,
+                             const char *diag_output_dir);
 
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);
