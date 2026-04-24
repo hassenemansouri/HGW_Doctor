@@ -49,6 +49,20 @@ static amxb_bus_ctx_t  *g_bus_ctx = NULL;
 static AnomalyEvent     s_last_event;
 static pthread_mutex_t  s_event_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Pending DM updates — filled by background threads, drained by main loop.
+ * All Ambiorix DM writes must happen on the main thread; callbacks only
+ * store results here and let the event loop apply them. */
+typedef struct {
+    int            recovery_valid;
+    RecoveryResult recovery_result;
+    AnomalyEvent   recovery_event;
+    int            upload_valid;
+    UploadStatus   upload_status;
+    char           upload_path[HGW_MAX_PATH];
+} PendingDmUpdate;
+static PendingDmUpdate  s_pending       = {0};
+static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static ActionType action_str_to_type(const char *s) {
     if (!s || s[0] == '\0') return ACTION_NONE;
     if (strcasecmp(s, "ProcessRestart") == 0) return ACTION_PROCESS_RESTART;
@@ -149,47 +163,55 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
 }
 
 /* -------------------------------------------------------------------------
- * Recovery done callback (recovery → datamodel)
+ * Recovery done callback (recovery thread → pending struct → main thread DM)
  * ------------------------------------------------------------------------- */
 static void on_recovery_done(const RecoveryResult *result, void *userdata) {
     (void)userdata;
-    datamodel_record_action(result);
-    /* Take a local copy of s_last_event under lock to avoid racing with the
-     * main thread reading it in the event loop. */
     AnomalyEvent ev_copy;
     pthread_mutex_lock(&s_event_mutex);
     ev_copy = s_last_event;
     pthread_mutex_unlock(&s_event_mutex);
-    datamodel_append_anomaly_log(
-        &ev_copy,
-        action_type_to_string(result->action),
-        result->result == RESULT_SUCCESS ? "Success" : "Failure"
-    );
+
+    pthread_mutex_lock(&s_pending_mutex);
+    s_pending.recovery_result = *result;
+    s_pending.recovery_event  = ev_copy;
+    s_pending.recovery_valid  = 1;
+    pthread_mutex_unlock(&s_pending_mutex);
 }
 
 /* -------------------------------------------------------------------------
- * Diagnostics done callback (diag_collector → uploader)
+ * Diagnostics done callback (diag thread → pending struct → main thread DM)
  * ------------------------------------------------------------------------- */
 static void on_diag_done(const char *archive_path, void *userdata) {
     (void)userdata;
     LOG_INFO("Diagnostics archive ready: %s", archive_path);
-    datamodel_record_upload(UPLOAD_STATUS_PENDING, archive_path);
-    uploader_send(archive_path);
+
+    pthread_mutex_lock(&s_pending_mutex);
+    strncpy(s_pending.upload_path, archive_path ? archive_path : "",
+            sizeof(s_pending.upload_path) - 1);
+    s_pending.upload_status = UPLOAD_STATUS_PENDING;
+    s_pending.upload_valid  = 1;
+    pthread_mutex_unlock(&s_pending_mutex);
+
+    uploader_send(archive_path);  /* thread-safe: spawns its own thread */
 }
 
 /* -------------------------------------------------------------------------
- * Upload done callback (uploader → datamodel)
+ * Upload done callback (upload thread → pending struct → main thread DM)
  * ------------------------------------------------------------------------- */
 static void on_upload_done(UploadStatus status, const char *path, void *userdata) {
     (void)userdata;
-
-    datamodel_record_upload(status, path);
-
-    if (status == UPLOAD_STATUS_SUCCESS) {
+    if (status == UPLOAD_STATUS_SUCCESS)
         LOG_INFO("Upload succeeded: %s", path ? path : "<unknown>");
-    } else {
+    else
         LOG_WARN("Upload failed for: %s", path ? path : "<unknown>");
-    }
+
+    pthread_mutex_lock(&s_pending_mutex);
+    s_pending.upload_status = status;
+    if (path)
+        strncpy(s_pending.upload_path, path, sizeof(s_pending.upload_path) - 1);
+    s_pending.upload_valid = 1;
+    pthread_mutex_unlock(&s_pending_mutex);
 }
 
 /* -------------------------------------------------------------------------
@@ -405,6 +427,29 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        /* Drain pending DM updates from background threads — runs every 100ms */
+        {
+            PendingDmUpdate snap = {0};
+            pthread_mutex_lock(&s_pending_mutex);
+            if (s_pending.recovery_valid || s_pending.upload_valid) {
+                snap = s_pending;
+                s_pending.recovery_valid = 0;
+                s_pending.upload_valid   = 0;
+            }
+            pthread_mutex_unlock(&s_pending_mutex);
+
+            if (snap.recovery_valid) {
+                datamodel_record_action(&snap.recovery_result);
+                datamodel_append_anomaly_log(
+                    &snap.recovery_event,
+                    action_type_to_string(snap.recovery_result.action),
+                    snap.recovery_result.result == RESULT_SUCCESS ? "Success" : "Failure"
+                );
+            }
+            if (snap.upload_valid)
+                datamodel_record_upload(snap.upload_status, snap.upload_path);
+        }
+
         /* Update data model stats at poll_interval_s cadence, not every 100ms */
         time_t now = time(NULL);
         if (now - last_stats_update >= (time_t)cfg.poll_interval_s) {
@@ -416,6 +461,7 @@ int main(int argc, char *argv[]) {
             }
             datamodel_update_uptime((uint32_t)(time(NULL) - start_time));
             datamodel_update_self_stats();
+            datamodel_sync_counters();
         }
 
         /* Process ubus events */
@@ -463,6 +509,7 @@ int main(int argc, char *argv[]) {
     unlink("/tmp/hgw_diag_trigger");
 
     pthread_mutex_destroy(&s_event_mutex);
+    pthread_mutex_destroy(&s_pending_mutex);
     logger_cleanup();
 
     return EXIT_SUCCESS;

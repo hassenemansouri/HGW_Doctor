@@ -45,6 +45,7 @@ void datamodel_update_self_stats(void);
 bool datamodel_get_config(DmConfig *out);
 void datamodel_sync_startup(const char *action_type, const char *upload_url,
                              const char *diag_output_dir);
+void datamodel_sync_counters(void);
 
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);

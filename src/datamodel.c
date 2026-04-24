@@ -259,7 +259,8 @@ void datamodel_record_action(const RecoveryResult *r) {
     dm_set_string(TR181_LAST_ACTION_TYPE,   type_str);
     dm_set_string(TR181_LAST_ACTION_STATUS, result_str);
     dm_set_datetime_now(TR181_LAST_ACTION_TIME);
-    dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, atomic_fetch_add(&s_total_actions, 1) + 1);
+    atomic_fetch_add(&s_total_actions, 1);
+    /* Counter DM write deferred to datamodel_sync_counters() on main thread */
 
     syslog(LOG_INFO, "Recovery action recorded: %s -> %s", type_str, result_str);
 }
@@ -276,13 +277,21 @@ void datamodel_record_upload(UploadStatus status, const char *archive_path) {
     if (archive_path)
         dm_set_string(TR181_DIAG_ARCHIVE_PATH, archive_path);
     if (status == UPLOAD_STATUS_SUCCESS) {
-        dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, atomic_fetch_add(&s_total_uploads, 1) + 1);
+        atomic_fetch_add(&s_total_uploads, 1);
         dm_set_datetime_now(TR181_UPLOAD_TIMESTAMP);
+        /* Counter DM write deferred to datamodel_sync_counters() on main thread */
     }
 }
 
 void datamodel_increment_anomaly_count(void) {
-    dm_set_uint32(TR181_ANOMALY_COUNT, atomic_fetch_add(&s_anomaly_count, 1) + 1);
+    atomic_fetch_add(&s_anomaly_count, 1);
+    /* DM write deferred — datamodel_sync_counters() writes from main thread */
+}
+
+void datamodel_sync_counters(void) {
+    dm_set_uint32(TR181_ANOMALY_COUNT,      atomic_load(&s_anomaly_count));
+    dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, atomic_load(&s_total_actions));
+    dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, atomic_load(&s_total_uploads));
 }
 
 void datamodel_append_anomaly_log(const AnomalyEvent *event,
