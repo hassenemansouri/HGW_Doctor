@@ -80,6 +80,7 @@ static void *upload_thread_fn(void *arg) {
 
     free(job);
 
+    /* Mark inactive last — cleanup busy-waits on this flag */
     pthread_mutex_lock(&s_thread_mutex);
     s_thread_active = 0;
     pthread_mutex_unlock(&s_thread_mutex);
@@ -123,7 +124,12 @@ int uploader_send(const char *archive_path) {
     job->cfg = s_cfg;  /* snapshot under mutex — thread reads job->cfg, never s_cfg */
 
     s_thread_active = 1;
-    if (pthread_create(&s_upload_thread, NULL, upload_thread_fn, job) != 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&s_upload_thread, &attr, upload_thread_fn, job);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
         s_thread_active = 0;
         pthread_mutex_unlock(&s_thread_mutex);
         free(job);
@@ -145,14 +151,23 @@ void uploader_update_url(const char *url) {
     LOG_INFO("Upload URL updated to: %s", url);
 }
 
-void uploader_cleanup(void) {
+void uploader_update_config(const UploaderConfig *cfg) {
+    if (!cfg) return;
     pthread_mutex_lock(&s_thread_mutex);
-    int active = s_thread_active;
+    s_cfg = *cfg;
     pthread_mutex_unlock(&s_thread_mutex);
+    LOG_INFO("Uploader config updated");
+}
 
-    if (active) {
-        LOG_INFO("Waiting for upload thread to finish...");
-        pthread_join(s_upload_thread, NULL);
+void uploader_cleanup(void) {
+    /* Upload thread is detached — busy-wait for it to finish (up to 30s) */
+    for (int i = 0; i < 300; i++) {
+        pthread_mutex_lock(&s_thread_mutex);
+        int active = s_thread_active;
+        pthread_mutex_unlock(&s_thread_mutex);
+        if (!active) break;
+        if (i == 0) LOG_INFO("Waiting for upload thread to finish...");
+        usleep(100000);
     }
 
     if (s_curl_ready) curl_global_cleanup();

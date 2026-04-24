@@ -68,13 +68,14 @@ import "hgw_doctor.so" as "hgw_doctor";
 
         /* Monitoring profiles — path: HGWDoctor.Profiles.{i}. */
         object Profiles[] {
-            %key string Name;
-            uint32 CPUThreshold = 90;
-            uint32 MemThreshold = 90;
-            uint32 ThresholdDuration = 60;
-            string ActionType = "ProcessRestart";
-            uint32 PollInterval = 5;
-            string Description = "";
+            %persistent %key string Name;
+            %persistent uint32 CPUThreshold = 90;
+            %persistent uint32 MemThreshold = 90;
+            %persistent uint32 ThresholdDuration = 60;
+            %persistent string ActionType = "ProcessRestart";
+            %persistent uint32 PollInterval = 5;
+            %persistent string ProcessList = "";
+            %persistent string Description = "";
         }
 
         /* Anomaly event log — path: HGWDoctor.AnomalyLog.{i}. */

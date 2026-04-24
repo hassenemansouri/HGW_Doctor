@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,10 +10,13 @@
 #include "logger.h"
 #include "recovery.h"
 
+#define RECOVERY_MAX_CONCURRENT 4
+
 static RecoveryConfig    s_cfg;
 static recovery_callback s_callback = NULL;
 static void             *s_userdata = NULL;
 static pthread_mutex_t   s_cfg_mutex = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int       s_active_threads = ATOMIC_VAR_INIT(0);
 
 typedef struct {
     AnomalyEvent      event;
@@ -123,6 +127,7 @@ static void *recovery_run(void *arg) {
     RecoveryTask   *task = (RecoveryTask *)arg;
     const AnomalyEvent *event = &task->event;
     RecoveryResult  result = {0};
+    atomic_fetch_add(&s_active_threads, 1);
 
     ActionType action;
     if (event->type == ANOMALY_PROCESS ||
@@ -171,6 +176,7 @@ static void *recovery_run(void *arg) {
 
     if (task->callback) task->callback(&result, task->userdata);
     free(task);
+    atomic_fetch_sub(&s_active_threads, 1);
     return NULL;
 }
 
@@ -184,6 +190,12 @@ int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdat
 }
 
 int recovery_dispatch(const AnomalyEvent *event) {
+    if (atomic_load(&s_active_threads) >= RECOVERY_MAX_CONCURRENT) {
+        LOG_WARN("Recovery: max concurrent actions (%d) reached, dropping dispatch",
+                 RECOVERY_MAX_CONCURRENT);
+        return -1;
+    }
+
     RecoveryTask *task = malloc(sizeof(*task));
     if (!task) return -1;
 
@@ -220,6 +232,9 @@ void recovery_update_config(const RecoveryConfig *cfg) {
 }
 
 void recovery_cleanup(void) {
+    /* Wait for all in-flight detached recovery threads to finish (up to 30s) */
+    for (int i = 0; i < 300 && atomic_load(&s_active_threads) > 0; i++)
+        usleep(100000);
     memset(&s_cfg, 0, sizeof(s_cfg));
     s_callback = NULL;
     s_userdata = NULL;

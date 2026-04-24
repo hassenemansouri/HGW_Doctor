@@ -27,6 +27,9 @@ static volatile int      s_stop = 0;
 /* Protects s_cfg against analyzer_update_config() called from main thread */
 static pthread_mutex_t   s_cfg_mutex    = PTHREAD_MUTEX_INITIALIZER;
 
+/* Set by analyzer_update_config() to clear per-process history on next sample */
+static volatile int      s_reset_proc_history = 0;
+
 /* History buffers for each metric type */
 #define HISTORY_MAX 300  /* enough for 5 minutes at 1s interval, adjust as needed */
 static struct {
@@ -92,9 +95,11 @@ static void *analyzer_thread(void *arg) {
     (void)arg;
     LOG_INFO("Analyzer thread started");
 
+    AnalyzerConfig cfg;
     pthread_mutex_lock(&s_cfg_mutex);
+    cfg = s_cfg;
     int required_samples =
-        (int) ((s_cfg.threshold_duration_s + s_cfg.poll_interval_s - 1) / s_cfg.poll_interval_s);
+        (int) ((cfg.threshold_duration_s + cfg.poll_interval_s - 1) / cfg.poll_interval_s);
     pthread_mutex_unlock(&s_cfg_mutex);
     if (required_samples < 1) required_samples = 1;
 
@@ -107,8 +112,12 @@ static void *analyzer_thread(void *arg) {
     int proc_mem_alert[HGW_MAX_PROC_LIST]  = {0};
 
     while (!s_stop) {
-        /* Wait for new data – simple polling every 100ms */
-        usleep(100000);
+        /* Sleep half the poll interval — avoids 50 no-op wakes per sample.
+         * Clamped to [100ms, 2s] so we never stall too long or spin too fast. */
+        uint32_t sleep_us = cfg.poll_interval_s * 500000u;
+        if (sleep_us < 100000u)  sleep_us = 100000u;
+        if (sleep_us > 2000000u) sleep_us = 2000000u;
+        usleep(sleep_us);
 
         /* Read the latest snapshot from circular buffer (non-destructive) */
         MetricSnapshot snap;
@@ -119,13 +128,24 @@ static void *analyzer_thread(void *arg) {
         have_last_seen = 1;
 
         /* Take a local config copy so analyzer_update_config() can run safely */
-        AnalyzerConfig cfg;
         pthread_mutex_lock(&s_cfg_mutex);
         cfg = s_cfg;
         required_samples = (int) ((cfg.threshold_duration_s + cfg.poll_interval_s - 1)
                                   / cfg.poll_interval_s);
         pthread_mutex_unlock(&s_cfg_mutex);
         if (required_samples < 1) required_samples = 1;
+
+        /* Clear per-process history when the process list has changed so stale
+         * data from a former process at the same slot doesn't trigger false anomalies. */
+        if (s_reset_proc_history) {
+            s_reset_proc_history = 0;
+            memset(s_history.proc_cpu,   0, sizeof(s_history.proc_cpu));
+            memset(s_history.proc_mem,   0, sizeof(s_history.proc_mem));
+            memset(s_history.proc_alive, 0, sizeof(s_history.proc_alive));
+            memset(proc_dead_alert, 0, sizeof(proc_dead_alert));
+            memset(proc_cpu_alert,  0, sizeof(proc_cpu_alert));
+            memset(proc_mem_alert,  0, sizeof(proc_mem_alert));
+        }
 
         history_push(&snap);
 
@@ -264,4 +284,5 @@ void analyzer_update_config(const AnalyzerConfig *cfg) {
     pthread_mutex_lock(&s_cfg_mutex);
     s_cfg = *cfg;
     pthread_mutex_unlock(&s_cfg_mutex);
+    s_reset_proc_history = 1;
 }

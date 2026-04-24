@@ -33,8 +33,12 @@ static unsigned long long s_prev_total    = 0;
 static unsigned long long s_prev_idle     = 0;
 static unsigned long long s_last_cpu_delta = 0; /* ticks in last sample period */
 
-/* Previous per-process CPU ticks */
+/* Previous per-process CPU ticks and cached PIDs */
 static unsigned long long s_prev_proc_cpu[HGW_MAX_PROC_LIST];
+static pid_t              s_cached_pids[HGW_MAX_PROC_LIST];
+
+/* Set by monitor_update_config() to signal the monitor thread to reset CPU deltas */
+static volatile int s_reset_cpu_history = 0;
 
 /* -------------------------------------------------------------------------
  * /proc/stat CPU parsing
@@ -158,31 +162,55 @@ static int read_mem_stats(uint32_t *total_kb, uint32_t *free_kb,
 }
 
 /* -------------------------------------------------------------------------
- * Process liveness check
+ * Process liveness check with PID caching
+ * Tries the cached PID first; falls back to a full /proc scan on miss.
  * ------------------------------------------------------------------------- */
-static bool proc_is_alive(const char *name, pid_t *out_pid) {
+static bool proc_is_alive(const char *name, pid_t *out_pid, int proc_idx) {
     if (!name || name[0] == '\0') { *out_pid = 0; return true; }
 
+    char comm_path[64], comm[HGW_MAX_PROC_NAME];
+
+    /* Fast path: verify the cached PID */
+    if (proc_idx >= 0 && proc_idx < HGW_MAX_PROC_LIST && s_cached_pids[proc_idx] > 0) {
+        snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm",
+                 (int)s_cached_pids[proc_idx]);
+        FILE *f = fopen(comm_path, "r");
+        if (f) {
+            bool match = false;
+            if (fgets(comm, sizeof(comm), f)) {
+                comm[strcspn(comm, "\n")] = '\0';
+                match = (strncmp(comm, name, HGW_MAX_PROC_NAME - 1) == 0);
+            }
+            fclose(f);
+            if (match) {
+                *out_pid = s_cached_pids[proc_idx];
+                return true;
+            }
+        }
+        s_cached_pids[proc_idx] = 0; /* stale cache entry */
+    }
+
+    /* Slow path: full /proc scan */
     DIR *d = opendir("/proc");
     if (!d) return false;
 
     struct dirent *ent;
-    char comm_path[64], comm[HGW_MAX_PROC_NAME];
     bool found = false;
 
     while ((ent = readdir(d)) != NULL) {
         pid_t pid = (pid_t)atoi(ent->d_name);
         if (pid <= 0) continue;
 
-        snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", pid);
+        snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", (int)pid);
         FILE *f = fopen(comm_path, "r");
         if (!f) continue;
 
         if (fgets(comm, sizeof(comm), f)) {
-            /* strip newline */
             comm[strcspn(comm, "\n")] = '\0';
             if (strncmp(comm, name, HGW_MAX_PROC_NAME - 1) == 0) {
                 *out_pid = pid;
+                if (proc_idx >= 0 && proc_idx < HGW_MAX_PROC_LIST)
+                    s_cached_pids[proc_idx] = pid;
                 found = true;
             }
         }
@@ -190,6 +218,8 @@ static bool proc_is_alive(const char *name, pid_t *out_pid) {
         if (found) break;
     }
     closedir(d);
+    if (!found && proc_idx >= 0 && proc_idx < HGW_MAX_PROC_LIST)
+        s_cached_pids[proc_idx] = 0;
     return found;
 }
 
@@ -218,6 +248,13 @@ static void *monitor_thread(void *arg) {
         sleep(interval);
         if (s_stop) break;
 
+        /* Reset per-process CPU deltas and PID cache if config changed */
+        if (s_reset_cpu_history) {
+            s_reset_cpu_history = 0;
+            memset(s_prev_proc_cpu, 0, sizeof(s_prev_proc_cpu));
+            memset(s_cached_pids,   0, sizeof(s_cached_pids));
+        }
+
         MetricSnapshot snap = {0};
         clock_gettime(CLOCK_MONOTONIC, &snap.ts);
 
@@ -229,7 +266,7 @@ static void *monitor_thread(void *arg) {
             ProcessStat *ps = &snap.procs[pi];
             strncpy(ps->name, proc_names[pi], HGW_MAX_PROC_NAME - 1);
             pid_t pid = 0;
-            ps->alive  = proc_is_alive(proc_names[pi], &pid);
+            ps->alive  = proc_is_alive(proc_names[pi], &pid, pi);
             ps->pid    = pid;
             if (ps->alive && pid > 0) {
                 ps->cpu_pct = proc_cpu_pct(pi, pid);
@@ -267,6 +304,9 @@ int monitor_init(MetricCircBuf *buf,
     s_count      = 0;
     memset(buf, 0, sizeof(*buf));
     pthread_mutex_init(&buf->buf_mutex, NULL);  /* must come after memset */
+    memset(s_prev_proc_cpu, 0, sizeof(s_prev_proc_cpu));
+    memset(s_cached_pids,   0, sizeof(s_cached_pids));
+    s_reset_cpu_history = 0;
 
     pthread_mutex_lock(&s_cfg_mutex);
     s_interval_s = (interval_s > 0) ? interval_s : 5;
@@ -309,5 +349,6 @@ void monitor_update_config(const char (*proc_names)[HGW_MAX_PROC_NAME],
     s_proc_count = (proc_count > HGW_MAX_PROC_LIST) ? HGW_MAX_PROC_LIST : proc_count;
     for (int i = 0; i < s_proc_count; i++)
         strncpy(s_proc_names[i], proc_names[i], HGW_MAX_PROC_NAME - 1);
+    s_reset_cpu_history = 1; /* signal thread to reset per-process CPU deltas */
     pthread_mutex_unlock(&s_cfg_mutex);
 }

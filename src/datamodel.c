@@ -399,7 +399,7 @@ void datamodel_update_self_stats(void) {
         }
         fclose(f);
         if (vmrss_kb > 0) {
-            /* mem_pct: fraction of total system RAM */
+            /* mem_pct: fraction of total system RAM used by this daemon */
             uint32_t mem_total_kb = 0;
             FILE *mi = fopen("/proc/meminfo", "r");
             if (mi) {
@@ -409,6 +409,9 @@ void datamodel_update_self_stats(void) {
             uint32_t mem_pct = (mem_total_kb > 0)
                 ? (uint32_t)((vmrss_kb * 100ULL) / mem_total_kb) : 0;
             dm_set_uint32(TR181_SELF_MEM,      mem_pct);
+            /* TR181_SELF_MEM_FREE (SelfStats.CurrentMemFreeKB) stores the daemon's
+             * own RSS in KB — "Free" in the field name is a misnomer but changing
+             * the ODL schema would be a protocol break. */
             dm_set_uint32(TR181_SELF_MEM_FREE, vmrss_kb);
         }
     }
@@ -519,7 +522,8 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
     }
 
     static const char * const profile_params[] = {
-        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval", "ActionType",
+        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
+        "ActionType", "ProcessList",
         NULL
     };
     amxd_trans_t trans;
@@ -628,7 +632,12 @@ static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
                                           void* priv) {
     (void)object; (void)param; (void)reason; (void)args; (void)retval; (void)priv;
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
-    if (f) fclose(f);
+    if (f) {
+        fclose(f);
+    } else {
+        syslog(LOG_WARNING, "dm_on_param_changed: failed to create /tmp/hgw_cfg_changed"
+               " — config change will be lost");
+    }
     return amxd_status_function_not_implemented;
 }
 
@@ -643,7 +652,12 @@ static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
     bool trigger = args ? GET_BOOL(args, "value") : false;
     if (trigger) {
         FILE *f = fopen("/tmp/hgw_diag_trigger", "w");
-        if (f) fclose(f);
+        if (f) {
+            fclose(f);
+        } else {
+            syslog(LOG_WARNING, "dm_on_trigger_write: failed to create /tmp/hgw_diag_trigger"
+                   " — diagnostic trigger will be lost");
+        }
     }
     return amxd_status_function_not_implemented;
 }

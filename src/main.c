@@ -3,6 +3,7 @@
  * @brief HGW-Doctor daemon entry point and main event loop.
  */
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
@@ -40,7 +41,7 @@ static volatile sig_atomic_t g_running          = 1;
 static volatile sig_atomic_t g_reload_cfg       = 0;
 static volatile sig_atomic_t g_diag_req         = 0;  /* set by SIGUSR1 — manual trigger */
 static volatile sig_atomic_t g_anomaly_diag     = 0;  /* set by on_anomaly — anomaly trigger */
-static volatile int          g_monitoring_enabled = 1; /* cleared when Enable=false written to DM */
+static _Atomic int           g_monitoring_enabled = 1; /* cleared when Enable=false written to DM */
 
 static amxd_dm_t        g_dm;
 static amxo_parser_t    g_parser;
@@ -252,6 +253,32 @@ int main(int argc, char *argv[]) {
         LOG_WARN("Failed to connect to ubus");
     }
 
+    /* 4b. Merge DM persistent values into cfg — takes priority over config file.
+     * libamxo restores saved %persistent params from /etc/amx/hgw_doctor/ during
+     * AMXO_START. Any value written via ubus/ACS in a prior run is authoritative. */
+    {
+        DmConfig dmc = {0};
+        if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0) {
+            cfg.cpu_threshold_pct    = dmc.cpu_threshold_pct;
+            cfg.mem_threshold_pct    = dmc.mem_threshold_pct;
+            cfg.threshold_duration_s = dmc.threshold_duration_s;
+            cfg.poll_interval_s      = dmc.poll_interval_s;
+            cfg.action_type          = action_str_to_type(dmc.action_type);
+            if (dmc.process_list[0] != '\0')
+                parse_process_list(dmc.process_list, cfg.process_names, &cfg.process_count);
+            if (dmc.upload_url[0] != '\0')
+                strncpy(cfg.upload_url, dmc.upload_url, sizeof(cfg.upload_url) - 1);
+            if (dmc.diag_output_dir[0] != '\0')
+                strncpy(cfg.diag_output_dir, dmc.diag_output_dir, sizeof(cfg.diag_output_dir) - 1);
+            g_monitoring_enabled = dmc.enable ? 1 : 0;
+            LOG_INFO("Startup: DM persistent state applied "
+                     "(cpu=%u%% mem=%u%% dur=%us poll=%us action=%s enable=%d)",
+                     cfg.cpu_threshold_pct, cfg.mem_threshold_pct,
+                     cfg.threshold_duration_s, cfg.poll_interval_s,
+                     dmc.action_type, dmc.enable);
+        }
+    }
+
     /* 5. Worker modules */
     monitor_init(&g_metric_buf, cfg.process_names, cfg.process_count,
                  cfg.poll_interval_s);
@@ -338,6 +365,15 @@ int main(int argc, char *argv[]) {
 
             if (cur->diag_output_dir[0] != '\0')
                 diag_collector_update_output_dir(cur->diag_output_dir);
+
+            UploaderConfig ucfg_hup = {0};
+            ucfg_hup.timeout_s     = cur->upload_timeout_s;
+            ucfg_hup.max_retries   = cur->upload_max_retries;
+            ucfg_hup.retry_delay_s = cur->upload_retry_delay_s;
+            ucfg_hup.tls_verify    = cur->tls_verify;
+            strncpy(ucfg_hup.url,          cur->upload_url,   HGW_MAX_URL - 1);
+            strncpy(ucfg_hup.ca_cert_path, cur->ca_cert_path, HGW_MAX_PATH - 1);
+            uploader_update_config(&ucfg_hup);
 
             LOG_INFO("Config reloaded: all modules updated");
         }
@@ -464,7 +500,8 @@ int main(int argc, char *argv[]) {
             datamodel_sync_counters();
         }
 
-        /* Process ubus events */
+        /* Process ubus events; fallback sleep ensures we never busy-spin */
+        bool did_sleep = false;
         if (g_bus_ctx != NULL) {
             int fd = amxb_get_fd(g_bus_ctx);
             if (fd >= 0) {
@@ -472,11 +509,13 @@ int main(int argc, char *argv[]) {
                 struct timeval tv = {0, 100000}; /* 100ms */
                 FD_ZERO(&rfds);
                 FD_SET(fd, &rfds);
-                if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0) {
+                if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0)
                     amxb_read(g_bus_ctx);
-                }
+                did_sleep = true;
             }
         }
+        if (!did_sleep)
+            usleep(100000);
         amxp_signal_read();
     }
 
