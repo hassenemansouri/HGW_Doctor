@@ -80,7 +80,7 @@ static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
 static DmConfig s_last_applied_dmc = {0};
 /* Fallbacks for apply_dm_config() — set from flat config at startup/SIGHUP */
 static char s_scripts_dir[HGW_MAX_PATH]                                    = {0};
-static char s_fallback_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME]   = {{{0}}};
+static char s_fallback_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME]   = {{0}};
 static int  s_fallback_proc_count                                           = 0;
 
 static ActionType action_str_to_type(const char *s) {
@@ -136,7 +136,7 @@ static bool dmconfig_changed(const DmConfig *a, const DmConfig *b) {
 }
 
 static void apply_dm_config(const DmConfig *dmc) {
-    char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{{0}}};
+    char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
     int  proc_count = 0;
     parse_process_list(dmc->process_list, proc_names, &proc_count);
     if (proc_count == 0) {
