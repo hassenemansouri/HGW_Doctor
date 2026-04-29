@@ -75,6 +75,14 @@ typedef struct {
 static PendingDmUpdate  s_pending       = {0};
 static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Last DM config applied to the running modules — used by periodic poll to
+ * detect runtime ubus _set changes that don't fire action_param_write. */
+static DmConfig s_last_applied_dmc = {0};
+/* Fallbacks for apply_dm_config() — set from flat config at startup/SIGHUP */
+static char s_scripts_dir[HGW_MAX_PATH]                                    = {0};
+static char s_fallback_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME]   = {{{0}}};
+static int  s_fallback_proc_count                                           = 0;
+
 static ActionType action_str_to_type(const char *s) {
     if (!s || s[0] == '\0') return ACTION_NONE;
     if (strcasecmp(s, "ProcessRestart") == 0) return ACTION_PROCESS_RESTART;
@@ -115,6 +123,68 @@ static const char *action_type_to_string(ActionType action) {
         case ACTION_NONE:
         default:                     return "None";
     }
+}
+
+static bool dmconfig_changed(const DmConfig *a, const DmConfig *b) {
+    return a->cpu_threshold_pct    != b->cpu_threshold_pct    ||
+           a->mem_threshold_pct    != b->mem_threshold_pct    ||
+           a->threshold_duration_s != b->threshold_duration_s ||
+           a->poll_interval_s      != b->poll_interval_s      ||
+           a->enable               != b->enable               ||
+           strncmp(a->action_type,  b->action_type,  sizeof(a->action_type))  != 0 ||
+           strncmp(a->process_list, b->process_list, sizeof(a->process_list)) != 0;
+}
+
+static void apply_dm_config(const DmConfig *dmc) {
+    char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{{0}}};
+    int  proc_count = 0;
+    parse_process_list(dmc->process_list, proc_names, &proc_count);
+    if (proc_count == 0) {
+        memcpy(proc_names, s_fallback_proc_names, sizeof(proc_names));
+        proc_count = s_fallback_proc_count;
+    }
+
+    AnalyzerConfig acfg2 = {0};
+    acfg2.cpu_threshold_pct    = dmc->cpu_threshold_pct;
+    acfg2.mem_threshold_pct    = dmc->mem_threshold_pct;
+    acfg2.threshold_duration_s = dmc->threshold_duration_s;
+    acfg2.poll_interval_s      = dmc->poll_interval_s;
+    acfg2.process_count        = proc_count;
+    memcpy(acfg2.process_names, proc_names, sizeof(acfg2.process_names));
+    analyzer_update_config(&acfg2);
+    monitor_update_config(
+        (const char (*)[HGW_MAX_PROC_NAME]) proc_names,
+        proc_count, dmc->poll_interval_s);
+
+    RecoveryConfig rcfg2 = {0};
+    rcfg2.action_type   = action_str_to_type(dmc->action_type);
+    rcfg2.process_count = proc_count;
+    memcpy(rcfg2.process_names, proc_names, sizeof(rcfg2.process_names));
+    strncpy(rcfg2.scripts_dir, s_scripts_dir, HGW_MAX_PATH - 1);
+    recovery_update_config(&rcfg2);
+
+    if (dmc->upload_url[0] != '\0')
+        uploader_update_url(dmc->upload_url);
+    if (dmc->diag_output_dir[0] != '\0')
+        diag_collector_update_output_dir(dmc->diag_output_dir);
+
+    if (!dmc->enable && atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
+        atomic_store_explicit(&g_monitoring_enabled, 0, memory_order_relaxed);
+        datamodel_set_status(STATUS_DISABLED);
+        LOG_INFO("Monitoring disabled via DM");
+    } else if (dmc->enable && !atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
+        atomic_store_explicit(&g_monitoring_enabled, 1, memory_order_relaxed);
+        datamodel_set_status(STATUS_ENABLED);
+        LOG_INFO("Monitoring re-enabled via DM");
+    }
+
+    LOG_INFO("Live config updated from DM: "
+             "cpu=%u mem=%u dur=%u poll=%u action=%s procs=%d enable=%d",
+             dmc->cpu_threshold_pct, dmc->mem_threshold_pct,
+             dmc->threshold_duration_s, dmc->poll_interval_s,
+             dmc->action_type, proc_count, dmc->enable);
+
+    s_last_applied_dmc = *dmc;
 }
 
 /* -------------------------------------------------------------------------
@@ -289,6 +359,9 @@ int main(int argc, char *argv[]) {
     if (config_load(conf_path, &cfg) < 0) {
         LOG_WARN("Config load failed, using defaults");
     }
+    strncpy(s_scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
+    memcpy(s_fallback_proc_names, cfg.process_names, sizeof(s_fallback_proc_names));
+    s_fallback_proc_count = cfg.process_count;
 
     /* 3. Signal handling */
     install_signals();
@@ -330,6 +403,7 @@ int main(int argc, char *argv[]) {
             if (dmc.diag_output_dir[0] != '\0')
                 strncpy(cfg.diag_output_dir, dmc.diag_output_dir, sizeof(cfg.diag_output_dir) - 1);
             atomic_store_explicit(&g_monitoring_enabled, dmc.enable ? 1 : 0, memory_order_relaxed);
+            s_last_applied_dmc = dmc;
             LOG_INFO("Startup: DM persistent state applied "
                      "(cpu=%u%% mem=%u%% dur=%us poll=%us action=%s enable=%d)",
                      cfg.cpu_threshold_pct, cfg.mem_threshold_pct,
@@ -403,6 +477,7 @@ int main(int argc, char *argv[]) {
     time_t last_stats_update = 0;
     time_t last_diag_collect = 0;
     time_t last_wd_pet       = 0;
+    time_t last_cfg_poll     = 0;
 #define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
     while (g_running) {
         if (g_reload_cfg) {
@@ -433,6 +508,10 @@ int main(int argc, char *argv[]) {
             if (cur->diag_output_dir[0] != '\0')
                 diag_collector_update_output_dir(cur->diag_output_dir);
 
+            strncpy(s_scripts_dir, cur->scripts_dir, HGW_MAX_PATH - 1);
+            memcpy(s_fallback_proc_names, cur->process_names, sizeof(s_fallback_proc_names));
+            s_fallback_proc_count = cur->process_count;
+
             UploaderConfig ucfg_hup = {0};
             ucfg_hup.timeout_s     = cur->upload_timeout_s;
             ucfg_hup.max_retries   = cur->upload_max_retries;
@@ -456,60 +535,24 @@ int main(int argc, char *argv[]) {
             datamodel_reset_on_demand_trigger();
             diag_collect(NULL);
         }
-        /* Propagate any DM write (ACS/ubus) to the running daemon */
+        /* Propagate any DM write (ACS/ubus) to the running daemon.
+         * Two paths: (a) trigger file from dm_on_param_changed (startup/restore),
+         * (b) periodic poll every 5 s that catches runtime ubus _set writes. */
         if (unlink("/tmp/hgw_cfg_changed") == 0) {
             DmConfig dmc = {0};
-            if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0) {
-                /* Resolve process list: DM value takes priority, fall back to file cfg */
-                char dm_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
-                int  dm_proc_count = 0;
-                parse_process_list(dmc.process_list, dm_proc_names, &dm_proc_count);
-                if (dm_proc_count == 0) {
-                    memcpy(dm_proc_names, cfg.process_names, sizeof(dm_proc_names));
-                    dm_proc_count = cfg.process_count;
+            if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0)
+                apply_dm_config(&dmc);
+        }
+        {
+            time_t now_poll = time(NULL);
+            if (now_poll - last_cfg_poll >= 5) {
+                last_cfg_poll = now_poll;
+                DmConfig dmc = {0};
+                if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0 &&
+                    dmconfig_changed(&dmc, &s_last_applied_dmc)) {
+                    LOG_INFO("DM config change detected via poll");
+                    apply_dm_config(&dmc);
                 }
-
-                AnalyzerConfig acfg2 = {0};
-                acfg2.cpu_threshold_pct    = dmc.cpu_threshold_pct;
-                acfg2.mem_threshold_pct    = dmc.mem_threshold_pct;
-                acfg2.threshold_duration_s = dmc.threshold_duration_s;
-                acfg2.poll_interval_s      = dmc.poll_interval_s;
-                acfg2.process_count        = dm_proc_count;
-                memcpy(acfg2.process_names, dm_proc_names, sizeof(acfg2.process_names));
-                analyzer_update_config(&acfg2);
-                monitor_update_config(
-                    (const char (*)[HGW_MAX_PROC_NAME]) dm_proc_names,
-                    dm_proc_count, dmc.poll_interval_s);
-
-                RecoveryConfig rcfg2 = {0};
-                rcfg2.action_type   = action_str_to_type(dmc.action_type);
-                rcfg2.process_count = dm_proc_count;
-                memcpy(rcfg2.process_names, dm_proc_names, sizeof(rcfg2.process_names));
-                strncpy(rcfg2.scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
-                recovery_update_config(&rcfg2);
-
-                if (dmc.upload_url[0] != '\0')
-                    uploader_update_url(dmc.upload_url);
-
-                if (dmc.diag_output_dir[0] != '\0')
-                    diag_collector_update_output_dir(dmc.diag_output_dir);
-
-                /* Enable / disable monitoring */
-                if (!dmc.enable && atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
-                    atomic_store_explicit(&g_monitoring_enabled, 0, memory_order_relaxed);
-                    datamodel_set_status(STATUS_DISABLED);
-                    LOG_INFO("Monitoring disabled via DM");
-                } else if (dmc.enable && !atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
-                    atomic_store_explicit(&g_monitoring_enabled, 1, memory_order_relaxed);
-                    datamodel_set_status(STATUS_ENABLED);
-                    LOG_INFO("Monitoring re-enabled via DM");
-                }
-
-                LOG_INFO("Live config updated from DM: "
-                         "cpu=%u mem=%u dur=%u poll=%u action=%s procs=%d enable=%d",
-                         dmc.cpu_threshold_pct, dmc.mem_threshold_pct,
-                         dmc.threshold_duration_s, dmc.poll_interval_s,
-                         dmc.action_type, dm_proc_count, dmc.enable);
             }
         }
         if (atomic_load_explicit(&g_anomaly_diag, memory_order_acquire)) {
