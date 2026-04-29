@@ -114,8 +114,18 @@ static void dm_set_param(const char *param_path, amxc_var_t *val) {
                                        param_name, sizeof(param_name)) != 0)
         return;
 
+    /* amxd_dm_findf requires a trailing dot for sub-objects */
+    size_t obj_len = strlen(object_path);
+    if (obj_len > 0 && object_path[obj_len - 1] != '.' && obj_len + 1 < HGW_MAX_PATH) {
+        object_path[obj_len]     = '.';
+        object_path[obj_len + 1] = '\0';
+    }
+
     amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
-    if (!obj) return;
+    if (!obj) {
+        syslog(LOG_ERR, "dm_set_param: object not found for '%s'", object_path);
+        return;
+    }
 
     amxd_trans_t trans;
     amxd_trans_init(&trans);
@@ -162,6 +172,13 @@ static uint32_t dm_read_uint32(const char *param_path) {
     if (dm_split_path(param_path, object_path, sizeof(object_path),
                       param_name, sizeof(param_name)) != 0)
         return 0;
+
+    size_t obj_len = strlen(object_path);
+    if (obj_len > 0 && object_path[obj_len - 1] != '.' && obj_len + 1 < HGW_MAX_PATH) {
+        object_path[obj_len]     = '.';
+        object_path[obj_len + 1] = '\0';
+    }
+
     amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
     if (!obj) return 0;
     amxc_var_init(&val);
@@ -610,6 +627,9 @@ bool datamodel_get_config(DmConfig *out) {
 #define DM_READ_U32(path, field) do { \
     if (dm_split_path((path), object_path, sizeof(object_path), \
                       param_name, sizeof(param_name)) == 0) { \
+        size_t _ol = strlen(object_path); \
+        if (_ol > 0 && object_path[_ol-1] != '.' && _ol+1 < HGW_MAX_PATH) \
+            { object_path[_ol] = '.'; object_path[_ol+1] = '\0'; } \
         obj = amxd_dm_findf(s_dm, "%s", object_path); \
         if (obj && amxd_object_get_param(obj, param_name, &val) == amxd_status_ok) \
             (field) = amxc_var_dyncast(uint32_t, &val); \
@@ -619,6 +639,9 @@ bool datamodel_get_config(DmConfig *out) {
 #define DM_READ_STR(path, field, size) do { \
     if (dm_split_path((path), object_path, sizeof(object_path), \
                       param_name, sizeof(param_name)) == 0) { \
+        size_t _ol = strlen(object_path); \
+        if (_ol > 0 && object_path[_ol-1] != '.' && _ol+1 < HGW_MAX_PATH) \
+            { object_path[_ol] = '.'; object_path[_ol+1] = '\0'; } \
         obj = amxd_dm_findf(s_dm, "%s", object_path); \
         if (obj && amxd_object_get_param(obj, param_name, &val) == amxd_status_ok) { \
             const char *s = amxc_var_constcast(cstring_t, &val); \
