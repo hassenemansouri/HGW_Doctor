@@ -1,3 +1,0 @@
-%config {
-    %global "proxy-object.'Device.X_TELNET_HGWDoctor.'" = "HGWDoctor.";
-}

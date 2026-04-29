@@ -8,7 +8,6 @@
 typedef struct {
     char     output_dir[HGW_MAX_PATH];
     uint32_t max_archives;
-    pid_t    watch_pid;
 } DiagConfig;
 
 typedef void (*diag_done_callback)(const char *archive_path, void *userdata);

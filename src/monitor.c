@@ -3,6 +3,7 @@
  * @brief Periodic collection of CPU, memory and process liveness metrics.
  */
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,7 +23,7 @@ static char             s_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
 static int              s_proc_count  = 0;
 static uint32_t         s_interval_s  = 5;
 static pthread_t        s_thread;
-static volatile int     s_stop        = 0;
+static _Atomic int      s_stop        = ATOMIC_VAR_INIT(0);
 static volatile int     s_count       = 0;  /* total samples written */
 
 /* Protects s_proc_names, s_proc_count, s_interval_s against monitor_update_config() */
@@ -38,7 +39,7 @@ static unsigned long long s_prev_proc_cpu[HGW_MAX_PROC_LIST];
 static pid_t              s_cached_pids[HGW_MAX_PROC_LIST];
 
 /* Set by monitor_update_config() to signal the monitor thread to reset CPU deltas */
-static volatile int s_reset_cpu_history = 0;
+static _Atomic int s_reset_cpu_history = ATOMIC_VAR_INIT(0);
 
 /* -------------------------------------------------------------------------
  * /proc/stat CPU parsing
@@ -236,7 +237,7 @@ static void *monitor_thread(void *arg) {
     s_prev_total = t; s_prev_idle = i;
     memset(s_prev_proc_cpu, 0, sizeof(s_prev_proc_cpu));
 
-    while (!s_stop) {
+    while (!atomic_load_explicit(&s_stop, memory_order_relaxed)) {
         /* Take a local copy of config so monitor_update_config() can run safely */
         pthread_mutex_lock(&s_cfg_mutex);
         uint32_t interval = s_interval_s;
@@ -246,11 +247,11 @@ static void *monitor_thread(void *arg) {
         pthread_mutex_unlock(&s_cfg_mutex);
 
         sleep(interval);
-        if (s_stop) break;
+        if (atomic_load_explicit(&s_stop, memory_order_relaxed)) break;
 
         /* Reset per-process CPU deltas and PID cache if config changed */
-        if (s_reset_cpu_history) {
-            s_reset_cpu_history = 0;
+        if (atomic_load_explicit(&s_reset_cpu_history, memory_order_acquire)) {
+            atomic_store_explicit(&s_reset_cpu_history, 0, memory_order_relaxed);
             memset(s_prev_proc_cpu, 0, sizeof(s_prev_proc_cpu));
             memset(s_cached_pids,   0, sizeof(s_cached_pids));
         }
@@ -259,7 +260,9 @@ static void *monitor_thread(void *arg) {
         clock_gettime(CLOCK_MONOTONIC, &snap.ts);
 
         snap.sys_cpu_pct = compute_cpu_pct(); /* also updates s_last_cpu_delta */
-        read_mem_stats(&snap.sys_mem_total_kb, &snap.sys_mem_free_kb, &snap.sys_mem_pct);
+        if (read_mem_stats(&snap.sys_mem_total_kb, &snap.sys_mem_free_kb,
+                           &snap.sys_mem_pct) != 0)
+            LOG_WARN("Failed to read /proc/meminfo — mem stats zeroed this sample");
 
         snap.proc_count = proc_count;
         for (int pi = 0; pi < proc_count; pi++) {
@@ -300,7 +303,7 @@ int monitor_init(MetricCircBuf *buf,
                  const char (*proc_names)[HGW_MAX_PROC_NAME], int proc_count,
                  uint32_t interval_s) {
     s_buf        = buf;
-    s_stop       = 0;
+    atomic_store_explicit(&s_stop, 0, memory_order_relaxed);
     s_count      = 0;
     memset(buf, 0, sizeof(*buf));
     pthread_mutex_init(&buf->buf_mutex, NULL);  /* must come after memset */
@@ -324,9 +327,10 @@ int monitor_start(void) {
 }
 
 void monitor_stop(void) {
-    s_stop = 1;
+    atomic_store_explicit(&s_stop, 1, memory_order_relaxed);
     pthread_join(s_thread, NULL);
     pthread_mutex_destroy(&s_buf->buf_mutex);
+    pthread_mutex_destroy(&s_cfg_mutex);
 }
 
 bool monitor_peek_latest(MetricSnapshot *out) {
@@ -349,6 +353,6 @@ void monitor_update_config(const char (*proc_names)[HGW_MAX_PROC_NAME],
     s_proc_count = (proc_count > HGW_MAX_PROC_LIST) ? HGW_MAX_PROC_LIST : proc_count;
     for (int i = 0; i < s_proc_count; i++)
         strncpy(s_proc_names[i], proc_names[i], HGW_MAX_PROC_NAME - 1);
-    s_reset_cpu_history = 1; /* signal thread to reset per-process CPU deltas */
+    atomic_store_explicit(&s_reset_cpu_history, 1, memory_order_release);
     pthread_mutex_unlock(&s_cfg_mutex);
 }

@@ -152,6 +152,25 @@ static void dm_set_bool(const char *param_path, bool value) {
     amxc_var_clean(&val);
 }
 
+static uint32_t dm_read_uint32(const char *param_path) {
+    char object_path[HGW_MAX_PATH];
+    char param_name[HGW_MAX_PROC_NAME];
+    amxc_var_t val;
+    uint32_t result = 0;
+
+    if (!s_dm) return 0;
+    if (dm_split_path(param_path, object_path, sizeof(object_path),
+                      param_name, sizeof(param_name)) != 0)
+        return 0;
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
+    if (!obj) return 0;
+    amxc_var_init(&val);
+    if (amxd_object_get_param(obj, param_name, &val) == amxd_status_ok)
+        result = amxc_var_dyncast(uint32_t, &val);
+    amxc_var_clean(&val);
+    return result;
+}
+
 static void dm_set_datetime_now(const char *param_path) {
     char buf[32];
     time_t now = time(NULL);
@@ -177,6 +196,12 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
         return -1;
     }
     amxo_parser_invoke_entry_points(parser, dm, AMXO_START);
+
+    /* libamxo has just restored %persistent values from disk — pull the saved
+     * counter values back into the in-memory atomics so they survive restarts. */
+    atomic_store(&s_anomaly_count, dm_read_uint32(TR181_ANOMALY_COUNT));
+    atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
+    atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
 
     /* Register write-action callbacks in C (not ODL) to avoid the RTLD_LOCAL
      * dlsym lookup failure that causes a NULL call when %populate fires the action. */
@@ -359,10 +384,16 @@ void datamodel_update_self_stats(void) {
     FILE *f = fopen("/proc/self/stat", "r");
     if (f) {
         unsigned long utime = 0, stime = 0;
-        /* fields: pid(1) comm(2) state(3) ... utime(14) stime(15) */
-        int r = fscanf(f,
-            "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
-            &utime, &stime);
+        char stat_buf[512];
+        int r = 0;
+        if (fgets(stat_buf, sizeof(stat_buf), f)) {
+            /* Skip past comm field's closing ')' — handles names with spaces */
+            char *p = strrchr(stat_buf, ')');
+            if (p)
+                r = sscanf(p + 2,
+                    "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
+                    &utime, &stime);
+        }
         fclose(f);
         if (r == 2) {
             unsigned long long proc_ticks = (unsigned long long)utime + stime;
@@ -403,18 +434,22 @@ void datamodel_update_self_stats(void) {
             uint32_t mem_total_kb = 0;
             FILE *mi = fopen("/proc/meminfo", "r");
             if (mi) {
-                fscanf(mi, "MemTotal: %u kB", &mem_total_kb);
+                char mi_line[128];
+                while (fgets(mi_line, sizeof(mi_line), mi)) {
+                    if (sscanf(mi_line, "MemTotal: %u kB", &mem_total_kb) == 1) break;
+                }
                 fclose(mi);
             }
             uint32_t mem_pct = (mem_total_kb > 0)
                 ? (uint32_t)((vmrss_kb * 100ULL) / mem_total_kb) : 0;
-            dm_set_uint32(TR181_SELF_MEM,      mem_pct);
-            /* TR181_SELF_MEM_FREE (SelfStats.CurrentMemFreeKB) stores the daemon's
-             * own RSS in KB — "Free" in the field name is a misnomer but changing
-             * the ODL schema would be a protocol break. */
-            dm_set_uint32(TR181_SELF_MEM_FREE, vmrss_kb);
+            dm_set_uint32(TR181_SELF_MEM,     mem_pct);
+            dm_set_uint32(TR181_SELF_RSS_KB,  vmrss_kb);
         }
     }
+}
+
+void datamodel_reset_on_demand_trigger(void) {
+    dm_set_bool(TR181_ON_DEMAND_TRIGGER, false);
 }
 
 /* -------------------------------------------------------------------------

@@ -15,7 +15,7 @@ define Package/hgw-doctor
   SECTION  := utils
   CATEGORY := Utilities
   TITLE    := HGW-Doctor - Home Gateway Health Monitor
-  DEPENDS  := +libamxd +libamxo +libamxc +libamxp +libamxs +libcurl +libpthread
+  DEPENDS  := +libamxd +libamxo +libamxc +libamxp +libamxs +libamxb +libcurl +libpthread
 endef
 
 define Package/hgw-doctor/description

@@ -63,6 +63,13 @@ void logger_log(LogLevel level, const char *file, int line, const char *fmt, ...
     va_end(ap);
 
     if (written < 0) return;
+    if ((size_t)written >= sizeof(message)) {
+        /* Message was truncated — mark the tail so callers know */
+        message[sizeof(message) - 4] = '.';
+        message[sizeof(message) - 3] = '.';
+        message[sizeof(message) - 2] = '.';
+        message[sizeof(message) - 1] = '\0';
+    }
 
     if (s_open) {
         syslog(to_syslog_priority(level), "%s:%d %s", file, line, message);

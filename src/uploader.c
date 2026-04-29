@@ -101,12 +101,18 @@ int uploader_init(const UploaderConfig *cfg, upload_done_callback cb, void *user
 }
 
 int uploader_send(const char *archive_path) {
-    if (!s_curl_ready || !archive_path || archive_path[0] == '\0' || s_cfg.url[0] == '\0') {
+    if (!s_curl_ready || !archive_path || archive_path[0] == '\0') {
         if (s_callback) s_callback(UPLOAD_STATUS_FAILED, archive_path, s_userdata);
         return -1;
     }
 
     pthread_mutex_lock(&s_thread_mutex);
+    /* Check url under mutex — uploader_update_url/config write it under the same lock */
+    if (s_cfg.url[0] == '\0') {
+        pthread_mutex_unlock(&s_thread_mutex);
+        if (s_callback) s_callback(UPLOAD_STATUS_FAILED, archive_path, s_userdata);
+        return -1;
+    }
     if (s_thread_active) {
         pthread_mutex_unlock(&s_thread_mutex);
         LOG_WARN("Upload already in progress, dropping: %s", archive_path);

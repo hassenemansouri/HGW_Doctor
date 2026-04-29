@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -7,6 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -63,19 +65,43 @@ static int join_path(char *dst, size_t dst_size, const char *base, const char *l
     return 0;
 }
 
-static int run_shell_command(const char *command, int required_success) {
-    int rc;
+/* Fork and exec argv[0..] — no shell, so paths with metacharacters are safe. */
+static int run_argv(const char *const argv[]) {
+    pid_t pid;
+    int status;
 
-    if (!command || command[0] == '\0') return -1;
-
-    rc = system(command);
-    if (rc != 0) {
-        LOG_WARN("Command failed rc=%d: %s", rc, command);
-        return required_success ? -1 : rc;
+    if (!argv || !argv[0]) return -1;
+    pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
     }
-
-    return 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
+
+/* Fork, redirect child stdout to outfile, then exec argv[0..]. */
+static int run_argv_to_file(const char *const argv[], const char *outfile) {
+    pid_t pid;
+    int fd, status;
+
+    if (!argv || !argv[0] || !outfile) return -1;
+    fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    pid = fork();
+    if (pid < 0) { close(fd); return -1; }
+    if (pid == 0) {
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    close(fd);
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 
 static int ensure_dir(const char *path) {
     char tmp[HGW_MAX_PATH];
@@ -223,47 +249,68 @@ static int diag_collect_sync(const DiagArg *a) {
     char proc_mem_path[HGW_MAX_PATH * 2];
     char ps_path[HGW_MAX_PATH * 2];
     char dmesg_path[HGW_MAX_PATH * 2];
-    char command[HGW_MAX_PATH * 8];
     time_t now = time(NULL);
     struct tm tm_info;
+    const char *tar_argv[7];
+    const char *rm_argv[4];
+    const char *ps_argv[5];
 
-    if (ensure_dir(output_dir) != 0) return -1;
+    if (ensure_dir(output_dir) != 0) {
+        if (s_callback) s_callback(NULL, s_userdata);
+        return -1;
+    }
 
     localtime_r(&now, &tm_info);
     strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &tm_info);
 
     snprintf(dir_name, sizeof(dir_name), "diag_%s.d", timestamp);
     snprintf(archive_name, sizeof(archive_name), "diag_%s.tar.gz", timestamp);
-    if (join_path(temp_dir, sizeof(temp_dir), output_dir, dir_name) != 0) return -1;
-    if (join_path(archive_path, sizeof(archive_path), output_dir, archive_name) != 0) return -1;
+    if (join_path(temp_dir, sizeof(temp_dir), output_dir, dir_name) != 0 ||
+        join_path(archive_path, sizeof(archive_path), output_dir, archive_name) != 0) {
+        if (s_callback) s_callback(NULL, s_userdata);
+        return -1;
+    }
 
-    if (ensure_dir(temp_dir) != 0) return -1;
+    if (ensure_dir(temp_dir) != 0) {
+        if (s_callback) s_callback(NULL, s_userdata);
+        return -1;
+    }
 
-    if (join_path(event_path, sizeof(event_path), temp_dir, "event.txt") != 0) return -1;
-    if (join_path(proc_stat_path, sizeof(proc_stat_path), temp_dir, "proc_stat.txt") != 0) return -1;
-    if (join_path(proc_mem_path, sizeof(proc_mem_path), temp_dir, "proc_meminfo.txt") != 0) return -1;
-    if (join_path(ps_path, sizeof(ps_path), temp_dir, "ps.txt") != 0) return -1;
-    if (join_path(dmesg_path, sizeof(dmesg_path), temp_dir, "dmesg.txt") != 0) return -1;
+    if (join_path(event_path, sizeof(event_path), temp_dir, "event.txt") != 0 ||
+        join_path(proc_stat_path, sizeof(proc_stat_path), temp_dir, "proc_stat.txt") != 0 ||
+        join_path(proc_mem_path, sizeof(proc_mem_path), temp_dir, "proc_meminfo.txt") != 0 ||
+        join_path(ps_path, sizeof(ps_path), temp_dir, "ps.txt") != 0 ||
+        join_path(dmesg_path, sizeof(dmesg_path), temp_dir, "dmesg.txt") != 0) {
+        rm_argv[0] = "rm"; rm_argv[1] = "-rf"; rm_argv[2] = temp_dir; rm_argv[3] = NULL;
+        run_argv(rm_argv);
+        if (s_callback) s_callback(NULL, s_userdata);
+        return -1;
+    }
 
     write_event_file(event_path, event);
     copy_text_file("/proc/stat", proc_stat_path);
     copy_text_file("/proc/meminfo", proc_mem_path);
 
-    snprintf(command, sizeof(command), "ps -eo pid,ppid,comm,%%cpu,%%mem > '%s' 2>/dev/null", ps_path);
-    (void) run_shell_command(command, 0);
-    snprintf(command, sizeof(command), "dmesg | tail -n 200 > '%s' 2>/dev/null", dmesg_path);
-    (void) run_shell_command(command, 0);
+    ps_argv[0] = "ps"; ps_argv[1] = "-eo"; ps_argv[2] = "pid,ppid,comm,%cpu,%mem";
+    ps_argv[3] = NULL;
+    (void) run_argv_to_file(ps_argv, ps_path);
+    {
+        const char *dmesg_argv[] = { "dmesg", NULL };
+        (void) run_argv_to_file(dmesg_argv, dmesg_path);
+    }
 
-    snprintf(command, sizeof(command), "tar -czf '%s' -C '%s' .", archive_path, temp_dir);
-    if (run_shell_command(command, 1) != 0) {
-        snprintf(command, sizeof(command), "rm -rf '%s'", temp_dir);
-        (void) run_shell_command(command, 0);
+    tar_argv[0] = "tar"; tar_argv[1] = "-czf"; tar_argv[2] = archive_path;
+    tar_argv[3] = "-C";  tar_argv[4] = temp_dir; tar_argv[5] = "."; tar_argv[6] = NULL;
+    rm_argv[0] = "rm"; rm_argv[1] = "-rf"; rm_argv[2] = temp_dir; rm_argv[3] = NULL;
+
+    if (run_argv(tar_argv) != 0) {
+        LOG_WARN("tar failed for %s", archive_path);
+        run_argv(rm_argv);
+        if (s_callback) s_callback(NULL, s_userdata);
         return -1;
     }
 
-    snprintf(command, sizeof(command), "rm -rf '%s'", temp_dir);
-    (void) run_shell_command(command, 0);
-
+    run_argv(rm_argv);
     prune_archives(output_dir, a->cfg.max_archives);
     LOG_INFO("Diagnostics collected into %s", archive_path);
     if (s_callback) s_callback(archive_path, s_userdata);
@@ -282,10 +329,12 @@ int diag_collect(const AnomalyEvent *event) {
         LOG_WARN("Diag collection already in progress, skipping");
         return -1;
     }
+    /* Hold mutex for the entire s_diag_arg setup so the spawned thread sees
+     * a consistent snapshot — pthread_create acts as a release barrier. */
+    pthread_mutex_lock(&s_cfg_mutex);
     s_diag_arg.has_event = (event != NULL);
     if (event) s_diag_arg.event = *event;
-    pthread_mutex_lock(&s_cfg_mutex);
-    s_diag_arg.cfg = s_cfg;   /* snapshot — thread uses this, never touches s_cfg */
+    s_diag_arg.cfg = s_cfg;
     pthread_mutex_unlock(&s_cfg_mutex);
 
     if (pthread_create(&s_diag_thread, NULL, diag_thread_fn, &s_diag_arg) != 0) {

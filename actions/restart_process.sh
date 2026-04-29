@@ -15,7 +15,7 @@ INIT_NAME=$(basename "$PROC" .sh)
 # Try using init script first
 if [ -f "/etc/init.d/$INIT_NAME" ]; then
     logger -t hgw-doctor "Restarting service $INIT_NAME via init script"
-    /etc/init.d/$INIT_NAME restart
+    "/etc/init.d/$INIT_NAME" restart
     exit $?
 fi
 

@@ -3,6 +3,7 @@
  * @brief Anomaly detection based on metric history.
  */
 
+#include <stdatomic.h>
 #include <pthread.h>
 #include <string.h>
 #include <time.h>
@@ -22,13 +23,13 @@ static anomaly_callback  s_callback;
 static void             *s_userdata;
 
 static pthread_t         s_thread;
-static volatile int      s_stop = 0;
+static _Atomic int       s_stop = ATOMIC_VAR_INIT(0);
 
 /* Protects s_cfg against analyzer_update_config() called from main thread */
 static pthread_mutex_t   s_cfg_mutex    = PTHREAD_MUTEX_INITIALIZER;
 
 /* Set by analyzer_update_config() to clear per-process history on next sample */
-static volatile int      s_reset_proc_history = 0;
+static _Atomic int       s_reset_proc_history = ATOMIC_VAR_INIT(0);
 
 /* History buffers for each metric type */
 #define HISTORY_MAX 300  /* enough for 5 minutes at 1s interval, adjust as needed */
@@ -102,6 +103,7 @@ static void *analyzer_thread(void *arg) {
         (int) ((cfg.threshold_duration_s + cfg.poll_interval_s - 1) / cfg.poll_interval_s);
     pthread_mutex_unlock(&s_cfg_mutex);
     if (required_samples < 1) required_samples = 1;
+    if (required_samples > HISTORY_MAX) required_samples = HISTORY_MAX;
 
     struct timespec last_seen = {0};
     int have_last_seen = 0;
@@ -111,7 +113,7 @@ static void *analyzer_thread(void *arg) {
     int proc_cpu_alert[HGW_MAX_PROC_LIST]  = {0};
     int proc_mem_alert[HGW_MAX_PROC_LIST]  = {0};
 
-    while (!s_stop) {
+    while (!atomic_load_explicit(&s_stop, memory_order_relaxed)) {
         /* Sleep half the poll interval — avoids 50 no-op wakes per sample.
          * Clamped to [100ms, 2s] so we never stall too long or spin too fast. */
         uint32_t sleep_us = cfg.poll_interval_s * 500000u;
@@ -134,11 +136,12 @@ static void *analyzer_thread(void *arg) {
                                   / cfg.poll_interval_s);
         pthread_mutex_unlock(&s_cfg_mutex);
         if (required_samples < 1) required_samples = 1;
+        if (required_samples > HISTORY_MAX) required_samples = HISTORY_MAX;
 
         /* Clear per-process history when the process list has changed so stale
          * data from a former process at the same slot doesn't trigger false anomalies. */
-        if (s_reset_proc_history) {
-            s_reset_proc_history = 0;
+        if (atomic_load_explicit(&s_reset_proc_history, memory_order_acquire)) {
+            atomic_store_explicit(&s_reset_proc_history, 0, memory_order_relaxed);
             memset(s_history.proc_cpu,   0, sizeof(s_history.proc_cpu));
             memset(s_history.proc_mem,   0, sizeof(s_history.proc_mem));
             memset(s_history.proc_alive, 0, sizeof(s_history.proc_alive));
@@ -263,7 +266,7 @@ int analyzer_init(MetricCircBuf *buf, const AnalyzerConfig *cfg,
     s_cfg = *cfg;
     s_callback = cb;
     s_userdata = userdata;
-    s_stop = 0;
+    atomic_store_explicit(&s_stop, 0, memory_order_relaxed);
     memset(&s_history, 0, sizeof(s_history));
     return 0;
 }
@@ -274,7 +277,7 @@ int analyzer_start(void) {
 }
 
 void analyzer_stop(void) {
-    s_stop = 1;
+    atomic_store_explicit(&s_stop, 1, memory_order_relaxed);
     pthread_join(s_thread, NULL);
     pthread_mutex_destroy(&s_cfg_mutex);
 }
@@ -284,5 +287,5 @@ void analyzer_update_config(const AnalyzerConfig *cfg) {
     pthread_mutex_lock(&s_cfg_mutex);
     s_cfg = *cfg;
     pthread_mutex_unlock(&s_cfg_mutex);
-    s_reset_proc_history = 1;
+    atomic_store_explicit(&s_reset_proc_history, 1, memory_order_release);
 }

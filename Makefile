@@ -34,6 +34,10 @@ SHARED   = $(SO_DIR)/hgw_doctor.so
 
 all: $(DAEMON) $(SHARED)
 
+# datamodel.o must be compiled with -fPIC because it is linked into hgw_doctor.so
+$(OBJ_DIR)/datamodel.o: $(SRC_DIR)/datamodel.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -fPIC -c $< -o $@
+
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -c $< -o $@
 
@@ -54,6 +58,8 @@ clean:
 install: all
 	install -D -m 755 $(DAEMON)                            /usr/sbin/hgw-doctor
 	install -D -m 644 $(SHARED)                            /usr/lib/hgw_doctor.so
+	mkdir -p /etc/amx/hgw_doctor
+	ln -sf /usr/lib/hgw_doctor.so                          /etc/amx/hgw_doctor/hgw_doctor.so
 	install -D -m 644 conf/hgw_doctor.conf                 /etc/hgw_doctor/hgw_doctor.conf
 	install -D -m 644 odl/hgw_doctor.odl                   /etc/amx/hgw_doctor/hgw_doctor.odl
 	install -D -m 644 odl/hgw_doctor_defaults.odl          /etc/amx/hgw_doctor/hgw_doctor_defaults.odl

@@ -72,9 +72,10 @@ static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) 
     else if (strcasecmp(key, "ActionType") == 0) cfg->action_type = parse_action_type(value);
     else if (strcasecmp(key, "ProcessList") == 0) {
         char tmp[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME];
+        char *saveptr = NULL;
         strncpy(tmp, value, sizeof(tmp) - 1);
         tmp[sizeof(tmp) - 1] = '\0';
-        char *token = strtok(tmp, ",");
+        char *token = strtok_r(tmp, ",", &saveptr);
         cfg->process_count = 0;
         while (token && cfg->process_count < HGW_MAX_PROC_LIST) {
             char *trimmed = token;
@@ -87,7 +88,7 @@ static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) 
                 cfg->process_names[cfg->process_count][HGW_MAX_PROC_NAME - 1] = '\0';
                 cfg->process_count++;
             }
-            token = strtok(NULL, ",");
+            token = strtok_r(NULL, ",", &saveptr);
         }
     }
     else if (strcasecmp(key, "ScriptsDir") == 0) strncpy(cfg->scripts_dir, value, sizeof(cfg->scripts_dir) - 1);

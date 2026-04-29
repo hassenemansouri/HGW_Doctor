@@ -10,7 +10,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/select.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <errno.h>
 #include <pthread.h>
 
 #include <amxc/amxc.h>
@@ -37,11 +39,20 @@
 /* -------------------------------------------------------------------------
  * Globals
  * ------------------------------------------------------------------------- */
-static volatile sig_atomic_t g_running          = 1;
-static volatile sig_atomic_t g_reload_cfg       = 0;
-static volatile sig_atomic_t g_diag_req         = 0;  /* set by SIGUSR1 — manual trigger */
-static volatile sig_atomic_t g_anomaly_diag     = 0;  /* set by on_anomaly — anomaly trigger */
-static _Atomic int           g_monitoring_enabled = 1; /* cleared when Enable=false written to DM */
+#define RECOVERY_COOLDOWN_S  300  /* min seconds between recovery actions of same type */
+#define WD_PET_INTERVAL_S     10  /* watchdog keep-alive interval */
+
+static volatile sig_atomic_t g_running           = 1;
+static volatile sig_atomic_t g_reload_cfg        = 0;
+static volatile sig_atomic_t g_diag_req          = 0;  /* set by SIGUSR1 — manual trigger */
+static _Atomic int           g_anomaly_diag      = ATOMIC_VAR_INIT(0); /* set by on_anomaly */
+static _Atomic int           g_monitoring_enabled = ATOMIC_VAR_INIT(1);
+
+/* Per-AnomalyType last recovery dispatch time — cooldown enforcement.
+ * Accessed only from on_anomaly(), which is called serially by the analyzer thread. */
+static time_t s_last_recovery[6] = {0};
+
+static int g_wd_fd = -1;
 
 static amxd_dm_t        g_dm;
 static amxo_parser_t    g_parser;
@@ -76,11 +87,12 @@ static void parse_process_list(const char *list,
                                 char names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME],
                                 int *count) {
     char tmp[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME];
+    char *saveptr = NULL;
     *count = 0;
     if (!list || list[0] == '\0') return;
     strncpy(tmp, list, sizeof(tmp) - 1);
     tmp[sizeof(tmp) - 1] = '\0';
-    char *tok = strtok(tmp, ",");
+    char *tok = strtok_r(tmp, ",", &saveptr);
     while (tok && *count < HGW_MAX_PROC_LIST) {
         while (*tok == ' ') tok++;
         char *end = tok + strlen(tok);
@@ -91,7 +103,7 @@ static void parse_process_list(const char *list,
             names[*count][HGW_MAX_PROC_NAME - 1] = '\0';
             (*count)++;
         }
-        tok = strtok(NULL, ",");
+        tok = strtok_r(NULL, ",", &saveptr);
     }
 }
 
@@ -117,6 +129,32 @@ static void write_pid_file(void) {
         fclose(f);
     } else {
         LOG_WARN("Failed to write PID file %s", HGW_PID_FILE);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * Hardware watchdog
+ * ------------------------------------------------------------------------- */
+static void watchdog_open(void) {
+    g_wd_fd = open("/dev/watchdog", O_WRONLY | O_CLOEXEC);
+    if (g_wd_fd < 0)
+        LOG_INFO("No watchdog device found — hardware watchdog disabled");
+    else
+        LOG_INFO("Watchdog opened — petting every %ds", WD_PET_INTERVAL_S);
+}
+
+static void watchdog_pet(void) {
+    if (g_wd_fd >= 0 && write(g_wd_fd, "1", 1) < 0)
+        LOG_WARN("Watchdog pet failed: %s", strerror(errno));
+}
+
+static void watchdog_close(void) {
+    if (g_wd_fd >= 0) {
+        /* "V" magic char signals the driver this was an intentional close —
+         * prevents a reboot when CONFIG_WATCHDOG_NOWAYOUT is not set. */
+        (void)write(g_wd_fd, "V", 1);
+        close(g_wd_fd);
+        g_wd_fd = -1;
     }
 }
 
@@ -148,19 +186,31 @@ static void install_signals(void) {
  * ------------------------------------------------------------------------- */
 static void on_anomaly(const AnomalyEvent *event, void *userdata) {
     (void)userdata;
-    if (!g_monitoring_enabled) return;
+    if (!atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) return;
     LOG_WARN("Anomaly detected: type=%d value=%u%% duration=%us",
              event->type, event->metric_value, event->duration_s);
 
-    /* Write s_last_event and set g_anomaly_diag under lock so the main thread
-     * always sees a consistent snapshot (memory ordering guarantee). */
+    /* Write s_last_event under lock, then publish the flag atomically.
+     * The mutex unlock acts as a release barrier for s_last_event; the
+     * acquire load in the main loop pairs with this release store. */
     pthread_mutex_lock(&s_event_mutex);
     s_last_event = *event;
-    g_anomaly_diag = 1;
     pthread_mutex_unlock(&s_event_mutex);
+    atomic_store_explicit(&g_anomaly_diag, 1, memory_order_release);
 
     datamodel_increment_anomaly_count();
-    recovery_dispatch(event);
+
+    /* Per-type cooldown — prevents hammering recovery while an anomaly persists */
+    int type_idx = ((int)event->type >= 0 && (int)event->type < 6) ? (int)event->type : 0;
+    time_t now_rc = time(NULL);
+    if (now_rc - s_last_recovery[type_idx] >= RECOVERY_COOLDOWN_S) {
+        s_last_recovery[type_idx] = now_rc;
+        recovery_dispatch(event);
+    } else {
+        LOG_INFO("Recovery cooldown active for anomaly type %d (%lds remaining)",
+                 event->type,
+                 (long)(RECOVERY_COOLDOWN_S - (now_rc - s_last_recovery[type_idx])));
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -185,16 +235,25 @@ static void on_recovery_done(const RecoveryResult *result, void *userdata) {
  * ------------------------------------------------------------------------- */
 static void on_diag_done(const char *archive_path, void *userdata) {
     (void)userdata;
-    LOG_INFO("Diagnostics archive ready: %s", archive_path);
+    if (!archive_path) {
+        LOG_WARN("Diagnostics collection failed — no archive produced");
+        pthread_mutex_lock(&s_pending_mutex);
+        s_pending.upload_path[0] = '\0';
+        s_pending.upload_status  = UPLOAD_STATUS_FAILED;
+        s_pending.upload_valid   = 1;
+        pthread_mutex_unlock(&s_pending_mutex);
+        return;
+    }
 
+    LOG_INFO("Diagnostics archive ready: %s", archive_path);
     pthread_mutex_lock(&s_pending_mutex);
-    strncpy(s_pending.upload_path, archive_path ? archive_path : "",
-            sizeof(s_pending.upload_path) - 1);
+    strncpy(s_pending.upload_path, archive_path, sizeof(s_pending.upload_path) - 1);
+    s_pending.upload_path[sizeof(s_pending.upload_path) - 1] = '\0';
     s_pending.upload_status = UPLOAD_STATUS_PENDING;
     s_pending.upload_valid  = 1;
     pthread_mutex_unlock(&s_pending_mutex);
 
-    uploader_send(archive_path);  /* thread-safe: spawns its own thread */
+    uploader_send(archive_path);
 }
 
 /* -------------------------------------------------------------------------
@@ -270,7 +329,7 @@ int main(int argc, char *argv[]) {
                 strncpy(cfg.upload_url, dmc.upload_url, sizeof(cfg.upload_url) - 1);
             if (dmc.diag_output_dir[0] != '\0')
                 strncpy(cfg.diag_output_dir, dmc.diag_output_dir, sizeof(cfg.diag_output_dir) - 1);
-            g_monitoring_enabled = dmc.enable ? 1 : 0;
+            atomic_store_explicit(&g_monitoring_enabled, dmc.enable ? 1 : 0, memory_order_relaxed);
             LOG_INFO("Startup: DM persistent state applied "
                      "(cpu=%u%% mem=%u%% dur=%us poll=%us action=%s enable=%d)",
                      cfg.cpu_threshold_pct, cfg.mem_threshold_pct,
@@ -311,7 +370,6 @@ int main(int argc, char *argv[]) {
 
     DiagConfig dcfg = {0};
     dcfg.max_archives = cfg.diag_max_archives;
-    dcfg.watch_pid    = 0;
     strncpy(dcfg.output_dir, cfg.diag_output_dir, HGW_MAX_PATH - 1);
     diag_collector_init(&dcfg, on_diag_done, NULL);
 
@@ -325,17 +383,26 @@ int main(int argc, char *argv[]) {
     uploader_init(&ucfg, on_upload_done, NULL);
 
     /* 6. Start threads */
-    monitor_start();
-    analyzer_start();
+    if (monitor_start() != 0) {
+        LOG_ERROR("Failed to start monitor thread — aborting");
+        return EXIT_FAILURE;
+    }
+    if (analyzer_start() != 0) {
+        LOG_ERROR("Failed to start analyzer thread — aborting");
+        monitor_stop();
+        return EXIT_FAILURE;
+    }
     write_pid_file();
+    watchdog_open();
     datamodel_set_status("Enabled");
 
     LOG_INFO("HGW-Doctor running");
 
     /* 7. Main event loop */
-    time_t start_time = time(NULL);
+    time_t start_time        = time(NULL);
     time_t last_stats_update = 0;
     time_t last_diag_collect = 0;
+    time_t last_wd_pet       = 0;
 #define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
     while (g_running) {
         if (g_reload_cfg) {
@@ -382,15 +449,15 @@ int main(int argc, char *argv[]) {
             LOG_INFO("On-demand diagnostics requested via SIGUSR1");
             diag_collect(NULL);
         }
-        /* Check for trigger file written by dm_trigger_diagnostics() RPC */
-        if (access("/tmp/hgw_diag_trigger", F_OK) == 0) {
-            unlink("/tmp/hgw_diag_trigger");
-            LOG_INFO("On-demand diagnostics triggered via TR-181 RPC");
+        /* Check for trigger file written by dm_trigger_diagnostics() RPC.
+         * unlink() is atomic — avoids the access()+unlink() race. */
+        if (unlink("/tmp/hgw_diag_trigger") == 0) {
+            LOG_INFO("On-demand diagnostics triggered via TR-181 write");
+            datamodel_reset_on_demand_trigger();
             diag_collect(NULL);
         }
         /* Propagate any DM write (ACS/ubus) to the running daemon */
-        if (access("/tmp/hgw_cfg_changed", F_OK) == 0) {
-            unlink("/tmp/hgw_cfg_changed");
+        if (unlink("/tmp/hgw_cfg_changed") == 0) {
             DmConfig dmc = {0};
             if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0) {
                 /* Resolve process list: DM value takes priority, fall back to file cfg */
@@ -428,12 +495,12 @@ int main(int argc, char *argv[]) {
                     diag_collector_update_output_dir(dmc.diag_output_dir);
 
                 /* Enable / disable monitoring */
-                if (!dmc.enable && g_monitoring_enabled) {
-                    g_monitoring_enabled = 0;
+                if (!dmc.enable && atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
+                    atomic_store_explicit(&g_monitoring_enabled, 0, memory_order_relaxed);
                     datamodel_set_status(STATUS_DISABLED);
                     LOG_INFO("Monitoring disabled via DM");
-                } else if (dmc.enable && !g_monitoring_enabled) {
-                    g_monitoring_enabled = 1;
+                } else if (dmc.enable && !atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
+                    atomic_store_explicit(&g_monitoring_enabled, 1, memory_order_relaxed);
                     datamodel_set_status(STATUS_ENABLED);
                     LOG_INFO("Monitoring re-enabled via DM");
                 }
@@ -445,11 +512,10 @@ int main(int argc, char *argv[]) {
                          dmc.action_type, dm_proc_count, dmc.enable);
             }
         }
-        if (g_anomaly_diag) {
-            /* Take a consistent copy of the event under lock */
+        if (atomic_load_explicit(&g_anomaly_diag, memory_order_acquire)) {
             AnomalyEvent ev_copy;
+            atomic_store_explicit(&g_anomaly_diag, 0, memory_order_relaxed);
             pthread_mutex_lock(&s_event_mutex);
-            g_anomaly_diag = 0;
             ev_copy = s_last_event;
             pthread_mutex_unlock(&s_event_mutex);
             time_t now_diag = time(NULL);
@@ -500,16 +566,23 @@ int main(int argc, char *argv[]) {
             datamodel_sync_counters();
         }
 
-        /* Process ubus events; fallback sleep ensures we never busy-spin */
+        /* Pet the hardware watchdog at a fixed interval independent of poll_interval_s */
+        {
+            time_t now_wd = time(NULL);
+            if (now_wd - last_wd_pet >= WD_PET_INTERVAL_S) {
+                last_wd_pet = now_wd;
+                watchdog_pet();
+            }
+        }
+
+        /* Process ubus events; fallback sleep ensures we never busy-spin.
+         * poll() has no fd-number upper limit unlike FD_SET/select. */
         bool did_sleep = false;
         if (g_bus_ctx != NULL) {
             int fd = amxb_get_fd(g_bus_ctx);
             if (fd >= 0) {
-                fd_set rfds;
-                struct timeval tv = {0, 100000}; /* 100ms */
-                FD_ZERO(&rfds);
-                FD_SET(fd, &rfds);
-                if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0)
+                struct pollfd pfd = { .fd = fd, .events = POLLIN };
+                if (poll(&pfd, 1, 100) > 0 && (pfd.revents & POLLIN))
                     amxb_read(g_bus_ctx);
                 did_sleep = true;
             }
@@ -520,6 +593,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* 8. Graceful shutdown */
+    watchdog_close();  /* disarm before slow cleanup — writes "V" magic char */
     LOG_INFO("HGW-Doctor shutting down");
     datamodel_set_status("Disabled");
 

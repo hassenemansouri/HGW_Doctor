@@ -1,4 +1,0 @@
-#include "global_variables.odl";
-%config {
-    %global prefix_ = "Device.";
-}

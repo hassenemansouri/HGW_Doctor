@@ -52,7 +52,7 @@
 /* ── Self stats (hgw-doctor own resource usage) ──────────────────────────── */
 #define TR181_SELF_CPU            TR181_ROOT ".SelfStats.CurrentCPUUsage"
 #define TR181_SELF_MEM            TR181_ROOT ".SelfStats.CurrentMemUsage"
-#define TR181_SELF_MEM_FREE       TR181_ROOT ".SelfStats.CurrentMemFreeKB"
+#define TR181_SELF_RSS_KB         TR181_ROOT ".SelfStats.CurrentRSSKB"
 
 /* ── Profiles table ──────────────────────────────────────────────────────── */
 #define TR181_PROFILES            TR181_ROOT ".Profiles"

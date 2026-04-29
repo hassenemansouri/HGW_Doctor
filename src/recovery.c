@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <pthread.h>
+#include <errno.h>
 
 #include "logger.h"
 #include "recovery.h"
@@ -58,20 +59,26 @@ static int join_path(char *dst, size_t dst_size, const char *base, const char *l
     return 0;
 }
 
-static int run_command(const char *command) {
-    int rc;
+/* Fork and exec argv[0] with no shell — argv must be NULL-terminated.
+ * No user-controlled data ever reaches a shell interpreter this way. */
+static int run_argv(const char *const argv[]) {
+    pid_t pid;
+    int status;
 
-    if (!command || command[0] == '\0') return -1;
-
-    rc = system(command);
-    if (rc == -1) return -1;
-    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
-    return -1;
+    if (!argv || !argv[0]) return -1;
+    pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
 static int run_action_script(const char *scripts_dir, const char *script_name, const char *arg) {
     char script_path[HGW_MAX_PATH * 2];
-    char command[HGW_MAX_PATH * 4];
+    const char *argv[3];
 
     if (!scripts_dir || scripts_dir[0] == '\0') return -1;
 
@@ -80,54 +87,67 @@ static int run_action_script(const char *scripts_dir, const char *script_name, c
     }
     if (access(script_path, X_OK) != 0) return -1;
 
-    if (arg && arg[0] != '\0') {
-        snprintf(command, sizeof(command), "'%s' '%s'", script_path, arg);
-    } else {
-        snprintf(command, sizeof(command), "'%s'", script_path);
-    }
-
-    return run_command(command);
+    argv[0] = script_path;
+    argv[1] = (arg && arg[0] != '\0') ? arg : NULL;
+    argv[2] = NULL;
+    return run_argv(argv);
 }
 
 static int do_process_restart(const char *scripts_dir, const char *proc_name) {
-    char command[HGW_MAX_PATH * 4];
     int rc;
+    const char *hup_argv[]  = { "pkill", "-HUP",  "-x", proc_name, NULL };
+    const char *term_argv[] = { "pkill", "-TERM", "-x", proc_name, NULL };
 
     if (!proc_name || proc_name[0] == '\0') return -1;
 
     rc = run_action_script(scripts_dir, "restart_process.sh", proc_name);
     if (rc == 0) return 0;
 
-    snprintf(command, sizeof(command),
-             "sh -c \"pkill -HUP -x '%s' >/dev/null 2>&1 || pkill -TERM -x '%s' >/dev/null 2>&1\"",
-             proc_name, proc_name);
-    return run_command(command);
+    rc = run_argv(hup_argv);
+    if (rc == 0) return 0;
+    return run_argv(term_argv);
+}
+
+static int do_drop_caches(void) {
+    FILE *f = fopen("/proc/sys/vm/drop_caches", "w");
+    if (!f) return -1;
+    int rc = (fputs("3\n", f) >= 0) ? 0 : -1;
+    fclose(f);
+    return rc;
 }
 
 static int do_cache_clear(const char *scripts_dir) {
+    const char *sync_argv[] = { "sync", NULL };
     int rc = run_action_script(scripts_dir, "clear_cache.sh", NULL);
     if (rc == 0) return 0;
-    return run_command("sh -c \"sync; echo 3 > /proc/sys/vm/drop_caches\"");
+    run_argv(sync_argv);
+    return do_drop_caches();
 }
 
 static int do_reboot(const char *scripts_dir) {
-    int rc = run_action_script(scripts_dir, "reboot_system.sh", NULL);
+    const char *ubus_argv[] = {
+        "ubus", "call", "Device", "Reboot",
+        "{\"Cause\":\"LocalReboot\",\"Reason\":\"HGWDoctor\"}",
+        NULL
+    };
+    const char *reboot_argv[] = { "/sbin/reboot", NULL };
+    const char *reboot_fallback[] = { "reboot", NULL };
+    int rc;
+
+    rc = run_action_script(scripts_dir, "reboot_system.sh", NULL);
     if (rc == 0) return 0;
 
-    /* Follow PrplOS pattern: call Device.Reboot() via ubus if available,
-     * fall back to shell reboot otherwise. */
-    rc = run_command("ubus call Device Reboot '{\"Cause\":\"LocalReboot\",\"Reason\":\"HGWDoctor\"}' 2>/dev/null");
+    rc = run_argv(ubus_argv);
     if (rc == 0) return 0;
 
-    if (access("/sbin/reboot", X_OK) == 0) return run_command("/sbin/reboot");
-    return run_command("reboot");
+    if (access("/sbin/reboot", X_OK) == 0) return run_argv(reboot_argv);
+    return run_argv(reboot_fallback);
 }
 
 static void *recovery_run(void *arg) {
     RecoveryTask   *task = (RecoveryTask *)arg;
     const AnomalyEvent *event = &task->event;
     RecoveryResult  result = {0};
-    atomic_fetch_add(&s_active_threads, 1);
 
     ActionType action;
     if (event->type == ANOMALY_PROCESS ||
@@ -190,14 +210,20 @@ int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdat
 }
 
 int recovery_dispatch(const AnomalyEvent *event) {
-    if (atomic_load(&s_active_threads) >= RECOVERY_MAX_CONCURRENT) {
+    /* Increment before pthread_create so the cap is enforced atomically */
+    int prev = atomic_fetch_add(&s_active_threads, 1);
+    if (prev >= RECOVERY_MAX_CONCURRENT) {
+        atomic_fetch_sub(&s_active_threads, 1);
         LOG_WARN("Recovery: max concurrent actions (%d) reached, dropping dispatch",
                  RECOVERY_MAX_CONCURRENT);
         return -1;
     }
 
     RecoveryTask *task = malloc(sizeof(*task));
-    if (!task) return -1;
+    if (!task) {
+        atomic_fetch_sub(&s_active_threads, 1);
+        return -1;
+    }
 
     task->event = *event;
     pthread_mutex_lock(&s_cfg_mutex);
@@ -214,6 +240,7 @@ int recovery_dispatch(const AnomalyEvent *event) {
     pthread_attr_destroy(&attr);
     if (rc != 0) {
         free(task);
+        atomic_fetch_sub(&s_active_threads, 1);
         return -1;
     }
     return 0;
