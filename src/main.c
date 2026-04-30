@@ -47,6 +47,7 @@ static volatile sig_atomic_t g_reload_cfg        = 0;
 static volatile sig_atomic_t g_diag_req          = 0;  /* set by SIGUSR1 — manual trigger */
 static _Atomic int           g_anomaly_diag      = ATOMIC_VAR_INIT(0); /* set by on_anomaly */
 static _Atomic int           g_monitoring_enabled = ATOMIC_VAR_INIT(1);
+static _Atomic int           g_dm_changed        = ATOMIC_VAR_INIT(0); /* set by DM signal */
 
 /* Per-AnomalyType last recovery dispatch time — cooldown enforcement.
  * Accessed only from on_anomaly(), which is called serially by the analyzer thread. */
@@ -329,6 +330,13 @@ static void on_diag_done(const char *archive_path, void *userdata) {
 /* -------------------------------------------------------------------------
  * Upload done callback (upload thread → pending struct → main thread DM)
  * ------------------------------------------------------------------------- */
+static void on_dm_object_changed(const char *const sig_name,
+                                 const amxc_var_t *const data,
+                                 void *const priv) {
+    (void)sig_name; (void)data; (void)priv;
+    atomic_store_explicit(&g_dm_changed, 1, memory_order_release);
+}
+
 static void on_upload_done(UploadStatus status, const char *path, void *userdata) {
     (void)userdata;
     if (status == UPLOAD_STATUS_SUCCESS)
@@ -378,6 +386,9 @@ int main(int argc, char *argv[]) {
         LOG_INFO("Connected to ubus");
         if (amxb_register(g_bus_ctx, &g_dm) == 0) {
             LOG_INFO("Data model registered on ubus");
+            /* Subscribe to DM change signals — fires for all writes including ubus _set */
+            amxp_slot_connect(&g_dm.sigmngr, "dm:object-changed", NULL,
+                              on_dm_object_changed, NULL);
         } else {
             LOG_WARN("Failed to register data model on ubus");
         }
@@ -535,22 +546,37 @@ int main(int argc, char *argv[]) {
             datamodel_reset_on_demand_trigger();
             diag_collect(NULL);
         }
-        /* Propagate any DM write (ACS/ubus) to the running daemon.
-         * Two paths: (a) trigger file from dm_on_param_changed (startup/restore),
-         * (b) periodic poll every 5 s that catches runtime ubus _set writes. */
+        /* Propagate DM writes to running modules.
+         * Path 1: trigger file (startup/restore via dm_on_param_changed).
+         * Path 2: dm:object-changed Ambiorix signal (reactive, catches ubus _set).
+         * Path 3: periodic poll fallback every 5 s. */
         if (unlink("/tmp/hgw_cfg_changed") == 0) {
             DmConfig dmc = {0};
             if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0)
                 apply_dm_config(&dmc);
+        }
+        if (atomic_load_explicit(&g_dm_changed, memory_order_acquire)) {
+            atomic_store_explicit(&g_dm_changed, 0, memory_order_relaxed);
+            DmConfig dmc = {0};
+            if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0 &&
+                dmconfig_changed(&dmc, &s_last_applied_dmc)) {
+                LOG_INFO("DM config updated (signal): cpu=%u dur=%u enable=%d",
+                         dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
+                apply_dm_config(&dmc);
+            }
         }
         {
             time_t now_poll = time(NULL);
             if (now_poll - last_cfg_poll >= 5) {
                 last_cfg_poll = now_poll;
                 DmConfig dmc = {0};
-                if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0 &&
-                    dmconfig_changed(&dmc, &s_last_applied_dmc)) {
-                    LOG_INFO("DM config change detected via poll");
+                bool cfg_ok = datamodel_get_config(&dmc);
+                if (!cfg_ok || dmc.poll_interval_s == 0) {
+                    LOG_WARN("cfg-poll: DM read failed (ok=%d poll_s=%u cpu=%u)",
+                             cfg_ok, dmc.poll_interval_s, dmc.cpu_threshold_pct);
+                } else if (dmconfig_changed(&dmc, &s_last_applied_dmc)) {
+                    LOG_INFO("DM config updated (poll): cpu=%u dur=%u enable=%d",
+                             dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
                     apply_dm_config(&dmc);
                 }
             }
