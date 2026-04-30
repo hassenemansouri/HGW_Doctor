@@ -58,10 +58,14 @@ static void config_defaults(HgwConfig *cfg) {
     cfg->tls_verify = true;
 
     strncpy(cfg->scripts_dir, "/usr/lib/hgw_doctor/actions", sizeof(cfg->scripts_dir) - 1);
+    cfg->scripts_dir[sizeof(cfg->scripts_dir) - 1] = '\0';
     strncpy(cfg->diag_output_dir, "/tmp/hgw_diag", sizeof(cfg->diag_output_dir) - 1);
+    cfg->diag_output_dir[sizeof(cfg->diag_output_dir) - 1] = '\0';
     strncpy(cfg->upload_url, "https://diagnostics.telnet.tn/upload",
             sizeof(cfg->upload_url) - 1);
+    cfg->upload_url[sizeof(cfg->upload_url) - 1] = '\0';
     strncpy(cfg->odl_path, "/etc/amx/hgw_doctor/hgw_doctor.odl", sizeof(cfg->odl_path) - 1);
+    cfg->odl_path[sizeof(cfg->odl_path) - 1] = '\0';
 }
 
 static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) {
@@ -91,16 +95,31 @@ static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) 
             token = strtok_r(NULL, ",", &saveptr);
         }
     }
-    else if (strcasecmp(key, "ScriptsDir") == 0) strncpy(cfg->scripts_dir, value, sizeof(cfg->scripts_dir) - 1);
-    else if (strcasecmp(key, "DiagOutputDir") == 0) strncpy(cfg->diag_output_dir, value, sizeof(cfg->diag_output_dir) - 1);
+    else if (strcasecmp(key, "ScriptsDir") == 0) {
+        strncpy(cfg->scripts_dir, value, sizeof(cfg->scripts_dir) - 1);
+        cfg->scripts_dir[sizeof(cfg->scripts_dir) - 1] = '\0';
+    }
+    else if (strcasecmp(key, "DiagOutputDir") == 0) {
+        strncpy(cfg->diag_output_dir, value, sizeof(cfg->diag_output_dir) - 1);
+        cfg->diag_output_dir[sizeof(cfg->diag_output_dir) - 1] = '\0';
+    }
     else if (strcasecmp(key, "DiagMaxArchives") == 0) cfg->diag_max_archives = parse_uint(value, cfg->diag_max_archives);
-    else if (strcasecmp(key, "UploadURL") == 0) strncpy(cfg->upload_url, value, sizeof(cfg->upload_url) - 1);
+    else if (strcasecmp(key, "UploadURL") == 0) {
+        strncpy(cfg->upload_url, value, sizeof(cfg->upload_url) - 1);
+        cfg->upload_url[sizeof(cfg->upload_url) - 1] = '\0';
+    }
     else if (strcasecmp(key, "UploadTimeout") == 0) cfg->upload_timeout_s = parse_uint(value, cfg->upload_timeout_s);
     else if (strcasecmp(key, "UploadMaxRetries") == 0) cfg->upload_max_retries = parse_uint(value, cfg->upload_max_retries);
     else if (strcasecmp(key, "UploadRetryDelay") == 0) cfg->upload_retry_delay_s = parse_uint(value, cfg->upload_retry_delay_s);
     else if (strcasecmp(key, "TLSVerify") == 0) cfg->tls_verify = parse_bool(value);
-    else if (strcasecmp(key, "CACertPath") == 0) strncpy(cfg->ca_cert_path, value, sizeof(cfg->ca_cert_path) - 1);
-    else if (strcasecmp(key, "ODLPath") == 0) strncpy(cfg->odl_path, value, sizeof(cfg->odl_path) - 1);
+    else if (strcasecmp(key, "CACertPath") == 0) {
+        strncpy(cfg->ca_cert_path, value, sizeof(cfg->ca_cert_path) - 1);
+        cfg->ca_cert_path[sizeof(cfg->ca_cert_path) - 1] = '\0';
+    }
+    else if (strcasecmp(key, "ODLPath") == 0) {
+        strncpy(cfg->odl_path, value, sizeof(cfg->odl_path) - 1);
+        cfg->odl_path[sizeof(cfg->odl_path) - 1] = '\0';
+    }
 }
 
 int config_load(const char *conf_path, HgwConfig *cfg) {
@@ -114,7 +133,10 @@ int config_load(const char *conf_path, HgwConfig *cfg) {
     f = fopen(path, "r");
     if (!f) {
         s_cfg = *cfg;
-        if (conf_path) strncpy(s_conf_path, conf_path, sizeof(s_conf_path) - 1);
+        if (conf_path) {
+            strncpy(s_conf_path, conf_path, sizeof(s_conf_path) - 1);
+            s_conf_path[sizeof(s_conf_path) - 1] = '\0';
+        }
         return (conf_path == NULL || errno == ENOENT) ? 0 : -1;
     }
 
@@ -140,6 +162,7 @@ int config_load(const char *conf_path, HgwConfig *cfg) {
     if (cfg->threshold_duration_s == 0) cfg->threshold_duration_s = 60;
     s_cfg = *cfg;
     strncpy(s_conf_path, path, sizeof(s_conf_path) - 1);
+    s_conf_path[sizeof(s_conf_path) - 1] = '\0';
     LOG_INFO("Configuration loaded from %s", path);
     return 0;
 }

@@ -268,6 +268,7 @@ static void *monitor_thread(void *arg) {
         for (int pi = 0; pi < proc_count; pi++) {
             ProcessStat *ps = &snap.procs[pi];
             strncpy(ps->name, proc_names[pi], HGW_MAX_PROC_NAME - 1);
+            ps->name[HGW_MAX_PROC_NAME - 1] = '\0';
             pid_t pid = 0;
             ps->alive  = proc_is_alive(proc_names[pi], &pid, pi);
             ps->pid    = pid;

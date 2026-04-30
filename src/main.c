@@ -132,8 +132,10 @@ static bool dmconfig_changed(const DmConfig *a, const DmConfig *b) {
            a->threshold_duration_s != b->threshold_duration_s ||
            a->poll_interval_s      != b->poll_interval_s      ||
            a->enable               != b->enable               ||
-           strncmp(a->action_type,  b->action_type,  sizeof(a->action_type))  != 0 ||
-           strncmp(a->process_list, b->process_list, sizeof(a->process_list)) != 0;
+           strncmp(a->action_type,      b->action_type,      sizeof(a->action_type))      != 0 ||
+           strncmp(a->process_list,     b->process_list,     sizeof(a->process_list))     != 0 ||
+           strncmp(a->upload_url,       b->upload_url,       sizeof(a->upload_url))       != 0 ||
+           strncmp(a->diag_output_dir,  b->diag_output_dir,  sizeof(a->diag_output_dir))  != 0;
 }
 
 static void apply_dm_config(const DmConfig *dmc) {
