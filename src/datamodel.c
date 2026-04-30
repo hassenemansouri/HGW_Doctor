@@ -220,23 +220,14 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
     atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
 
-    /* Register write-action callbacks in C (not ODL) to avoid the RTLD_LOCAL
-     * dlsym lookup failure that causes a NULL call when %populate fires the action. */
+    /* Register write-action callback only for OnDemandTrigger.
+     * Config params (CPUThreshold etc.) no longer use action_param_write —
+     * that callback was blocking the default DM write, causing _set to appear
+     * to succeed but not actually update the parameter value.
+     * Config changes are now detected via the dm:object-changed signal
+     * subscription in main.c and the 5s periodic poll fallback. */
     amxd_object_t *hgwdoc = amxd_dm_findf(dm, "HGWDoctor.");
     if (hgwdoc) {
-        /* Params that signal the main loop via /tmp/hgw_cfg_changed */
-        static const char * const cfg_params[] = {
-            "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
-            "ActionType", "ProcessList", "UploadURL", "DiagOutputDir", "Enable",
-            NULL
-        };
-        for (int i = 0; cfg_params[i]; i++) {
-            amxd_param_t *p = amxd_object_get_param_def(hgwdoc, cfg_params[i]);
-            if (p)
-                amxd_param_add_action_cb(p, action_param_write, dm_on_param_changed, NULL);
-        }
-
-        /* OnDemandTrigger: writing true kicks off a diagnostic collection */
         amxd_param_t *trigger = amxd_object_get_param_def(hgwdoc, "OnDemandTrigger");
         if (trigger)
             amxd_param_add_action_cb(trigger, action_param_write, dm_on_trigger_write, NULL);
