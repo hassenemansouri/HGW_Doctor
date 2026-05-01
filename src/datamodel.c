@@ -739,15 +739,15 @@ static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
                                           const amxc_var_t* const args,
                                           amxc_var_t* const retval,
                                           void* priv) {
+    (void)object; (void)param; (void)args; (void)retval; (void)priv;
     if (reason != action_param_write)
         return amxd_status_function_not_implemented;
-    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
-    if (st == amxd_status_ok) {
-        FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
-        if (f) fclose(f);
-        else syslog(LOG_WARNING, "dm_on_param_changed: failed to create /tmp/hgw_cfg_changed");
-    }
-    return st;
+    /* Side effect only — returning function_not_implemented lets the default
+     * write handler run and commit the value to the DM. */
+    FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
+    if (f) fclose(f);
+    else syslog(LOG_WARNING, "dm_on_param_changed: failed to create /tmp/hgw_cfg_changed");
+    return amxd_status_function_not_implemented;
 }
 
 static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
@@ -756,17 +756,18 @@ static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
                                           const amxc_var_t* const args,
                                           amxc_var_t* const retval,
                                           void* priv) {
+    (void)object; (void)param; (void)retval; (void)priv;
     if (reason != action_param_write)
         return amxd_status_function_not_implemented;
-    /* args IS the value in action_param_write — not a table with "value" key */
+    /* args IS the incoming value — read it before returning function_not_implemented
+     * so the default write handler can commit it to the DM. */
     bool trigger = args ? amxc_var_dyncast(bool, args) : false;
-    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
-    if (st == amxd_status_ok && trigger) {
+    if (trigger) {
         FILE *f = fopen("/tmp/hgw_diag_trigger", "w");
         if (f) fclose(f);
         else syslog(LOG_WARNING, "dm_on_trigger_write: failed to create /tmp/hgw_diag_trigger");
     }
-    return st;
+    return amxd_status_function_not_implemented;
 }
 
 static amxd_status_t dm_on_ro_write(amxd_object_t* const object,
