@@ -10,8 +10,8 @@
     import-dbg = false;
     auto-resolver-order = [ "ftab", "auto" ];
 
-    /* persistent state is saved here on daemon stop */
-    odl-save-path    = "/etc/amx/hgw_doctor/";
+    /* persistent state is saved here on daemon stop — separate from installed ODL files */
+    odl-save-path    = "/etc/amx/hgw_doctor/persist/";
     odl-save-on-stop = true;
 }
 

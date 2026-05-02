@@ -11,6 +11,7 @@ CONFIG=/etc/hgw_doctor/hgw_doctor.conf
 PIDFILE=/var/run/hgw-doctor.pid
 
 start_service() {
+    mkdir -p /etc/amx/hgw_doctor/persist
     procd_open_instance hgw-doctor
     procd_set_param command "$PROG" "$CONFIG"
     procd_set_param respawn 3600 5 5
