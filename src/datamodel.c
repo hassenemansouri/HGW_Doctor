@@ -47,18 +47,10 @@ static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
                                           const amxc_var_t* const args,
                                           amxc_var_t* const retval,
                                           void* priv);
-static amxd_status_t dm_on_ro_write(amxd_object_t* const object,
-                                     amxd_param_t* const param,
-                                     amxd_action_t reason,
-                                     const amxc_var_t* const args,
-                                     amxc_var_t* const retval,
-                                     void* priv);
-
 static amxd_dm_t         *s_dm = NULL;
 static _Atomic uint32_t   s_anomaly_count = 0;
 static _Atomic uint32_t   s_total_actions = 0;
 static _Atomic uint32_t   s_total_uploads = 0;
-static bool               s_ro_write_reentrant = false;
 
 static int dm_split_path(const char *param_path, char *object_path,
                          size_t object_path_len, char *param_name,
@@ -251,43 +243,6 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
         if (trigger)
             amxd_param_add_action_cb(trigger, action_param_write, dm_on_trigger_write, NULL);
 
-        static const char * const ro_root_params[] = {
-            "Status", "LastActionType", "LastActionTime", "LastActionStatus",
-            "AnomalyCount", "DiagArchivePath", "UploadStatus", "UploadTimestamp",
-            NULL
-        };
-        for (int i = 0; ro_root_params[i]; i++) {
-            amxd_param_t *p = amxd_object_get_param_def(hgwdoc, ro_root_params[i]);
-            if (p)
-                amxd_param_add_action_cb(p, action_param_write, dm_on_ro_write, NULL);
-        }
-    }
-
-    static const char * const stats_params[] = {
-        "CurrentCPUUsage", "CurrentMemUsage", "CurrentMemFreeKB",
-        "TotalRecoveryActions", "TotalDiagUploads", "UptimeSeconds",
-        NULL
-    };
-    amxd_object_t *stats_obj = amxd_dm_findf(dm, "HGWDoctor.Stats.");
-    if (stats_obj) {
-        for (int i = 0; stats_params[i]; i++) {
-            amxd_param_t *p = amxd_object_get_param_def(stats_obj, stats_params[i]);
-            if (p)
-                amxd_param_add_action_cb(p, action_param_write, dm_on_ro_write, NULL);
-        }
-    }
-
-    static const char * const self_stats_params[] = {
-        "CurrentCPUUsage", "CurrentMemUsage", "CurrentRSSKB",
-        NULL
-    };
-    amxd_object_t *self_stats_obj = amxd_dm_findf(dm, "HGWDoctor.SelfStats.");
-    if (self_stats_obj) {
-        for (int i = 0; self_stats_params[i]; i++) {
-            amxd_param_t *p = amxd_object_get_param_def(self_stats_obj, self_stats_params[i]);
-            if (p)
-                amxd_param_add_action_cb(p, action_param_write, dm_on_ro_write, NULL);
-        }
     }
 
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
@@ -727,11 +682,10 @@ bool datamodel_get_config(DmConfig *out) {
 }
 
 /* -------------------------------------------------------------------------
- * Action callbacks — registered in C code after ODL parse to avoid the
- * RTLD_LOCAL dlsym lookup failure that caused a NULL-call segfault when
- * on-action-write was declared in the ODL.
- * Both call amxd_action_param_write() explicitly to perform the actual DM
- * write, then carry out their side effects and return the write status.
+ * Action callbacks — registered in C after ODL parse.
+ * Each calls amxd_action_param_write() to commit the value, then does its
+ * side effect, so the write and the side effect are atomic from the caller's
+ * perspective.
  * ------------------------------------------------------------------------- */
 static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
                                           amxd_param_t* const param,
@@ -739,15 +693,15 @@ static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
                                           const amxc_var_t* const args,
                                           amxc_var_t* const retval,
                                           void* priv) {
-    (void)object; (void)param; (void)args; (void)retval; (void)priv;
     if (reason != action_param_write)
         return amxd_status_function_not_implemented;
-    /* Side effect only — returning function_not_implemented lets the default
-     * write handler run and commit the value to the DM. */
-    FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
-    if (f) fclose(f);
-    else syslog(LOG_WARNING, "dm_on_param_changed: failed to create /tmp/hgw_cfg_changed");
-    return amxd_status_function_not_implemented;
+    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
+    if (st == amxd_status_ok) {
+        FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
+        if (f) fclose(f);
+        else syslog(LOG_WARNING, "dm_on_param_changed: failed to create /tmp/hgw_cfg_changed");
+    }
+    return st;
 }
 
 static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
@@ -756,42 +710,15 @@ static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
                                           const amxc_var_t* const args,
                                           amxc_var_t* const retval,
                                           void* priv) {
-    (void)object; (void)param; (void)retval; (void)priv;
     if (reason != action_param_write)
         return amxd_status_function_not_implemented;
-    /* args IS the incoming value — read it before returning function_not_implemented
-     * so the default write handler can commit it to the DM. */
     bool trigger = args ? amxc_var_dyncast(bool, args) : false;
-    if (trigger) {
+    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
+    if (st == amxd_status_ok && trigger) {
         FILE *f = fopen("/tmp/hgw_diag_trigger", "w");
         if (f) fclose(f);
         else syslog(LOG_WARNING, "dm_on_trigger_write: failed to create /tmp/hgw_diag_trigger");
     }
-    return amxd_status_function_not_implemented;
-}
-
-static amxd_status_t dm_on_ro_write(amxd_object_t* const object,
-                                     amxd_param_t* const param,
-                                     amxd_action_t reason,
-                                     const amxc_var_t* const args,
-                                     amxc_var_t* const retval,
-                                     void* priv) {
-    (void)retval; (void)priv;
-    if (reason != action_param_write)
-        return amxd_status_function_not_implemented;
-    /* Reentrancy guard: the transaction below re-invokes this callback.
-     * Second call returns function_not_implemented so the default handler
-     * runs with amxd_tattr_change_ro active, bypassing the read-only flag. */
-    if (s_ro_write_reentrant)
-        return amxd_status_function_not_implemented;
-    s_ro_write_reentrant = true;
-    amxd_trans_t trans;
-    amxd_trans_init(&trans);
-    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
-    amxd_trans_select_object(&trans, object);
-    amxd_trans_set_param(&trans, amxd_param_get_name(param), (amxc_var_t *)args);
-    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
-    amxd_trans_clean(&trans);
-    s_ro_write_reentrant = false;
     return st;
 }
+
