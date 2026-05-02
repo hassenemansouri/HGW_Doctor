@@ -43,6 +43,7 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
 void datamodel_update_uptime(uint32_t uptime_s);
 void datamodel_update_self_stats(void);
 void datamodel_reset_on_demand_trigger(void);
+bool datamodel_consume_on_demand_trigger(void);
 bool datamodel_get_config(DmConfig *out);
 void datamodel_sync_startup(const char *action_type, const char *upload_url,
                              const char *diag_output_dir);

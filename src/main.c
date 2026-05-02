@@ -541,11 +541,15 @@ int main(int argc, char *argv[]) {
             LOG_INFO("On-demand diagnostics requested via SIGUSR1");
             diag_collect(NULL);
         }
-        /* Check for trigger file written by dm_trigger_diagnostics() RPC.
+        /* RPC path: trigger file written by dm_trigger_diagnostics().
          * unlink() is atomic — avoids the access()+unlink() race. */
         if (unlink("/tmp/hgw_diag_trigger") == 0) {
-            LOG_INFO("On-demand diagnostics triggered via TR-181 write");
-            datamodel_reset_on_demand_trigger();
+            LOG_INFO("On-demand diagnostics triggered via TriggerDiagnostics() RPC");
+            diag_collect(NULL);
+        }
+        /* _set path: OnDemandTrigger param written directly via ubus _set. */
+        if (datamodel_consume_on_demand_trigger()) {
+            LOG_INFO("On-demand diagnostics triggered via TR-181 OnDemandTrigger write");
             diag_collect(NULL);
         }
         /* Propagate DM writes to running modules.

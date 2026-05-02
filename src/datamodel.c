@@ -22,10 +22,7 @@
 #include <amxd/amxd_dm.h>
 #include <amxd/amxd_object.h>
 #include <amxd/amxd_object_parameter.h>
-#include <amxd/amxd_object_action.h>
-#include <amxd/amxd_parameter_action.h>
 #include <amxd/amxd_transaction.h>
-#include <amxd/amxd_action.h>
 #include <amxo/amxo.h>
 
 #include "datamodel.h"
@@ -35,18 +32,6 @@
 /* -------------------------------------------------------------------------
  * Internal helpers
  * ------------------------------------------------------------------------- */
-static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
-                                          amxd_param_t* const param,
-                                          amxd_action_t reason,
-                                          const amxc_var_t* const args,
-                                          amxc_var_t* const retval,
-                                          void* priv);
-static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
-                                          amxd_param_t* const param,
-                                          amxd_action_t reason,
-                                          const amxc_var_t* const args,
-                                          amxc_var_t* const retval,
-                                          void* priv);
 static amxd_dm_t         *s_dm = NULL;
 static _Atomic uint32_t   s_anomaly_count = 0;
 static _Atomic uint32_t   s_total_actions = 0;
@@ -219,31 +204,6 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_anomaly_count, dm_read_uint32(TR181_ANOMALY_COUNT));
     atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
     atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
-
-    /* Register write-action callbacks:
-     * - dm_on_param_changed on all writable config params: calls amxd_action_param_write()
-     *   to perform the actual write, then creates /tmp/hgw_cfg_changed so the main loop
-     *   picks up the new value immediately rather than waiting for the 5s poll.
-     * - dm_on_trigger_write on OnDemandTrigger: same write + creates the diag trigger file. */
-    amxd_object_t *hgwdoc = amxd_dm_findf(dm, "HGWDoctor.");
-    if (hgwdoc) {
-        static const char * const cfg_param_names[] = {
-            "Enable", "Profile",
-            "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
-            "ActionType", "ProcessList",
-            "DiagOutputDir", "UploadURL",
-            NULL
-        };
-        for (int i = 0; cfg_param_names[i]; i++) {
-            amxd_param_t *p = amxd_object_get_param_def(hgwdoc, cfg_param_names[i]);
-            if (p)
-                amxd_param_add_action_cb(p, action_param_write, dm_on_param_changed, NULL);
-        }
-        amxd_param_t *trigger = amxd_object_get_param_def(hgwdoc, "OnDemandTrigger");
-        if (trigger)
-            amxd_param_add_action_cb(trigger, action_param_write, dm_on_trigger_write, NULL);
-
-    }
 
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
@@ -682,43 +642,38 @@ bool datamodel_get_config(DmConfig *out) {
 }
 
 /* -------------------------------------------------------------------------
- * Action callbacks — registered in C after ODL parse.
- * Each calls amxd_action_param_write() to commit the value, then does its
- * side effect, so the write and the side effect are atomic from the caller's
- * perspective.
+ * OnDemandTrigger helper — polled by the main loop each iteration.
+ * Reads the param; if true, resets it and returns true so the caller
+ * knows to kick off a diagnostic collection.
  * ------------------------------------------------------------------------- */
-static amxd_status_t dm_on_param_changed(amxd_object_t* const object,
-                                          amxd_param_t* const param,
-                                          amxd_action_t reason,
-                                          const amxc_var_t* const args,
-                                          amxc_var_t* const retval,
-                                          void* priv) {
-    if (reason != action_param_write)
-        return amxd_status_function_not_implemented;
-    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
-    if (st == amxd_status_ok) {
-        FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
-        if (f) fclose(f);
-        else syslog(LOG_WARNING, "dm_on_param_changed: failed to create /tmp/hgw_cfg_changed");
-    }
-    return st;
-}
+bool datamodel_consume_on_demand_trigger(void) {
+    char object_path[HGW_MAX_PATH];
+    char param_name[HGW_MAX_PROC_NAME];
+    amxc_var_t val;
+    bool triggered = false;
 
-static amxd_status_t dm_on_trigger_write(amxd_object_t* const object,
-                                          amxd_param_t* const param,
-                                          amxd_action_t reason,
-                                          const amxc_var_t* const args,
-                                          amxc_var_t* const retval,
-                                          void* priv) {
-    if (reason != action_param_write)
-        return amxd_status_function_not_implemented;
-    bool trigger = args ? amxc_var_dyncast(bool, args) : false;
-    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
-    if (st == amxd_status_ok && trigger) {
-        FILE *f = fopen("/tmp/hgw_diag_trigger", "w");
-        if (f) fclose(f);
-        else syslog(LOG_WARNING, "dm_on_trigger_write: failed to create /tmp/hgw_diag_trigger");
+    if (!s_dm) return false;
+    if (dm_split_path(TR181_ON_DEMAND_TRIGGER, object_path, sizeof(object_path),
+                      param_name, sizeof(param_name)) != 0)
+        return false;
+
+    size_t obj_len = strlen(object_path);
+    if (obj_len > 0 && object_path[obj_len - 1] != '.' && obj_len + 1 < HGW_MAX_PATH) {
+        object_path[obj_len]     = '.';
+        object_path[obj_len + 1] = '\0';
     }
-    return st;
+
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
+    if (!obj) return false;
+
+    amxc_var_init(&val);
+    if (amxd_object_get_param(obj, param_name, &val) == amxd_status_ok)
+        triggered = amxc_var_dyncast(bool, &val);
+    amxc_var_clean(&val);
+
+    if (triggered)
+        dm_set_bool(TR181_ON_DEMAND_TRIGGER, false);
+
+    return triggered;
 }
 
