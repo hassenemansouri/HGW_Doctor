@@ -22,6 +22,9 @@
 #include <amxd/amxd_dm.h>
 #include <amxd/amxd_object.h>
 #include <amxd/amxd_object_parameter.h>
+#include <amxd/amxd_object_action.h>
+#include <amxd/amxd_parameter_action.h>
+#include <amxd/amxd_action.h>
 #include <amxd/amxd_transaction.h>
 #include <amxo/amxo.h>
 
@@ -183,6 +186,26 @@ static void dm_set_datetime_now(const char *param_path) {
 /* -------------------------------------------------------------------------
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
+/* Write action callback for writable config params.
+ * On this Ambiorix version the default write action is not invoked unless an
+ * explicit callback calls amxd_action_param_write(), so we register one for
+ * every externally-writable parameter. */
+static amxd_status_t dm_on_param_changed(amxd_object_t *const object,
+                                          amxd_param_t *const param,
+                                          amxd_action_t reason,
+                                          const amxc_var_t *const args,
+                                          amxc_var_t *const retval,
+                                          void *priv) {
+    if (reason != action_param_write)
+        return amxd_status_function_not_implemented;
+    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
+    if (st == amxd_status_ok) {
+        FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
+        if (f) fclose(f);
+    }
+    return st;
+}
+
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_anomaly_count, 0);
     atomic_store(&s_total_actions, 0);
@@ -198,6 +221,25 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
         return -1;
     }
     amxo_parser_invoke_entry_points(parser, dm, AMXO_START);
+
+    /* Register explicit write callbacks for externally-writable config params.
+     * Without these, amxd_action_param_write is not called on this Ambiorix
+     * build and ubus _set silently leaves the DM value unchanged. */
+    amxd_object_t *hgwdoc = amxd_dm_findf(dm, "HGWDoctor.");
+    if (hgwdoc) {
+        static const char * const cfg_params[] = {
+            "Enable", "Profile",
+            "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
+            "ActionType", "ProcessList",
+            "DiagOutputDir", "UploadURL", "OnDemandTrigger",
+            NULL
+        };
+        for (int i = 0; cfg_params[i]; i++) {
+            amxd_param_t *p = amxd_object_get_param_def(hgwdoc, cfg_params[i]);
+            if (p)
+                amxd_param_add_action_cb(p, action_param_write, dm_on_param_changed, NULL);
+        }
+    }
 
     /* libamxo has just restored %persistent values from disk — pull the saved
      * counter values back into the in-memory atomics so they survive restarts. */
