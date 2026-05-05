@@ -187,23 +187,23 @@ static void dm_set_datetime_now(const char *param_path) {
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
 /* Write action callback for writable config params.
- * On this Ambiorix version the default write action is not invoked unless an
- * explicit callback calls amxd_action_param_write(), so we register one for
- * every externally-writable parameter. */
+ * Calling amxd_action_param_write() from within an action_param_write callback
+ * causes re-entrant invocation in Ambiorix 6.9.x and crashes the daemon.
+ * Instead: create the trigger file so the main loop picks up the new value on
+ * its next poll, then return function_not_implemented so Ambiorix's built-in
+ * write action stores the value itself. */
 static amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                           amxd_param_t *const param,
                                           amxd_action_t reason,
                                           const amxc_var_t *const args,
                                           amxc_var_t *const retval,
                                           void *priv) {
-    if (reason != action_param_write)
-        return amxd_status_function_not_implemented;
-    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
-    if (st == amxd_status_ok) {
+    (void)object; (void)param; (void)args; (void)retval; (void)priv;
+    if (reason == action_param_write) {
         FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
         if (f) fclose(f);
     }
-    return st;
+    return amxd_status_function_not_implemented;
 }
 
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
