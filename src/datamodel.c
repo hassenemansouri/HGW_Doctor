@@ -24,6 +24,7 @@
 #include <amxd/amxd_object_parameter.h>
 #include <amxd/amxd_object_action.h>
 #include <amxd/amxd_parameter_action.h>
+#include <amxd/amxd_parameter.h>
 #include <amxd/amxd_action.h>
 #include <amxd/amxd_transaction.h>
 #include <amxo/amxo.h>
@@ -186,24 +187,40 @@ static void dm_set_datetime_now(const char *param_path) {
 /* -------------------------------------------------------------------------
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
-/* Write action callback for writable config params.
- * Calling amxd_action_param_write() from within an action_param_write callback
- * causes re-entrant invocation in Ambiorix 6.9.x and crashes the daemon.
- * Instead: create the trigger file so the main loop picks up the new value on
- * its next poll, then return function_not_implemented so Ambiorix's built-in
- * write action stores the value itself. */
-static amxd_status_t dm_on_param_changed(amxd_object_t *const object,
-                                          amxd_param_t *const param,
-                                          amxd_action_t reason,
-                                          const amxc_var_t *const args,
-                                          amxc_var_t *const retval,
-                                          void *priv) {
-    (void)object; (void)param; (void)args; (void)retval; (void)priv;
-    if (reason == action_param_write) {
-        FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
+/* ODL-level write callback for all writable params (registered via
+ * "on action write call dm_on_param_changed" in hgw_doctor.odl).
+ *
+ * Runs in whichever process loaded the ODL (amxd or the daemon itself).
+ * Writes the new value directly to param->value — avoids calling
+ * amxd_param_set_value which re-enters amxd_dm_invoke_action and crashes.
+ * Creates trigger files so the daemon's main loop re-reads config from
+ * the authoritative bus DM via amxb_get. */
+amxd_status_t dm_on_param_changed(amxd_object_t *const object,
+                                   amxd_param_t *const param,
+                                   amxd_action_t reason,
+                                   const amxc_var_t *const args,
+                                   amxc_var_t *const retval,
+                                   void *priv) {
+    (void)object; (void)retval; (void)priv;
+    if (reason != action_param_write || !param || !args)
+        return amxd_status_function_not_implemented;
+
+    /* Write the new value directly — no action chain, no re-entrancy */
+    amxc_var_convert(&param->value, args, amxc_var_type_of(&param->value));
+
+    /* Signal the daemon's main loop that a config param changed */
+    FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
+    if (f) fclose(f);
+
+    /* OnDemandTrigger=true: also kick the diagnostics path */
+    const char *name = amxd_param_get_name(param);
+    if (name && strcmp(name, "OnDemandTrigger") == 0 &&
+        amxc_var_dyncast(bool, args)) {
+        f = fopen("/tmp/hgw_diag_trigger", "w");
         if (f) fclose(f);
     }
-    return amxd_status_function_not_implemented;
+
+    return amxd_status_ok;
 }
 
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
@@ -221,25 +238,6 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
         return -1;
     }
     amxo_parser_invoke_entry_points(parser, dm, AMXO_START);
-
-    /* Register explicit write callbacks for externally-writable config params.
-     * Without these, amxd_action_param_write is not called on this Ambiorix
-     * build and ubus _set silently leaves the DM value unchanged. */
-    amxd_object_t *hgwdoc = amxd_dm_findf(dm, "HGWDoctor.");
-    if (hgwdoc) {
-        static const char * const cfg_params[] = {
-            "Enable", "Profile",
-            "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
-            "ActionType", "ProcessList",
-            "DiagOutputDir", "UploadURL", "OnDemandTrigger",
-            NULL
-        };
-        for (int i = 0; cfg_params[i]; i++) {
-            amxd_param_t *p = amxd_object_get_param_def(hgwdoc, cfg_params[i]);
-            if (p)
-                amxd_param_add_action_cb(p, action_param_write, dm_on_param_changed, NULL);
-        }
-    }
 
     /* libamxo has just restored %persistent values from disk — pull the saved
      * counter values back into the in-memory atomics so they survive restarts. */

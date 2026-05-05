@@ -77,8 +77,47 @@ static PendingDmUpdate  s_pending       = {0};
 static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Last DM config applied to the running modules — used by periodic poll to
- * detect runtime ubus _set changes that don't fire action_param_write. */
+ * detect runtime ubus _set changes. */
 static DmConfig s_last_applied_dmc = {0};
+
+/* Read authoritative HGWDoctor config from the bus (amxd or daemon itself).
+ * Falls back to local DM if bus is unavailable. */
+static bool fetch_config_from_bus(DmConfig *out) {
+    amxc_var_t result;
+    amxc_var_init(&result);
+    bool ok = false;
+
+    if (!g_bus_ctx) goto fallback;
+    if (amxb_get(g_bus_ctx, "HGWDoctor.", 0, &result, 5) != 0) goto fallback;
+
+    {
+        /* amxb_get returns: [ [ { param: value, ... } ] ] */
+        amxc_var_t *params = GETI_ARG(GETI_ARG(&result, 0), 0);
+        if (!params) goto fallback;
+
+        memset(out, 0, sizeof(*out));
+        out->cpu_threshold_pct    = GET_UINT32(params, "CPUThreshold");
+        out->mem_threshold_pct    = GET_UINT32(params, "MemThreshold");
+        out->threshold_duration_s = GET_UINT32(params, "ThresholdDuration");
+        out->poll_interval_s      = GET_UINT32(params, "PollInterval");
+        out->enable               = GET_BOOL(params, "Enable");
+        const char *s;
+        s = GET_CHAR(params, "ActionType");
+        if (s) { strncpy(out->action_type, s, sizeof(out->action_type) - 1); }
+        s = GET_CHAR(params, "ProcessList");
+        if (s) { strncpy(out->process_list, s, sizeof(out->process_list) - 1); }
+        s = GET_CHAR(params, "UploadURL");
+        if (s) { strncpy(out->upload_url, s, sizeof(out->upload_url) - 1); }
+        s = GET_CHAR(params, "DiagOutputDir");
+        if (s) { strncpy(out->diag_output_dir, s, sizeof(out->diag_output_dir) - 1); }
+        ok = (out->poll_interval_s > 0);
+    }
+
+fallback:
+    amxc_var_clean(&result);
+    if (!ok) ok = datamodel_get_config(out);
+    return ok;
+}
 /* Fallbacks for apply_dm_config() — set from flat config at startup/SIGHUP */
 static char s_scripts_dir[HGW_MAX_PATH]                                    = {0};
 static char s_fallback_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME]   = {{0}};
@@ -388,9 +427,13 @@ int main(int argc, char *argv[]) {
         LOG_INFO("Connected to ubus");
         if (amxb_register(g_bus_ctx, &g_dm) == 0) {
             LOG_INFO("Data model registered on ubus");
-            /* Subscribe to DM change signals — fires for all writes including ubus _set */
+            /* Local DM signal — fires when the daemon's own DM changes */
             amxp_slot_connect(&g_dm.sigmngr, "dm:object-changed", NULL,
                               on_dm_object_changed, NULL);
+            /* Bus subscription — fires when amxd updates HGWDoctor (e.g. via _set) */
+            if (amxb_subscribe(g_bus_ctx, "HGWDoctor.", NULL,
+                               on_dm_object_changed, NULL) != 0)
+                LOG_WARN("Failed to subscribe to HGWDoctor bus events");
         } else {
             LOG_WARN("Failed to register data model on ubus");
         }
@@ -399,11 +442,11 @@ int main(int argc, char *argv[]) {
     }
 
     /* 4b. Merge DM persistent values into cfg — takes priority over config file.
-     * libamxo restores saved %persistent params from /etc/amx/hgw_doctor/ during
-     * AMXO_START. Any value written via ubus/ACS in a prior run is authoritative. */
+     * Reads from the bus (amxd's authoritative DM) so persisted values from a
+     * prior run that were written via ubus/ACS are correctly restored. */
     {
         DmConfig dmc = {0};
-        if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0) {
+        if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0) {
             cfg.cpu_threshold_pct    = dmc.cpu_threshold_pct;
             cfg.mem_threshold_pct    = dmc.mem_threshold_pct;
             cfg.threshold_duration_s = dmc.threshold_duration_s;
@@ -558,13 +601,17 @@ int main(int argc, char *argv[]) {
          * Path 3: periodic poll fallback every 5 s. */
         if (unlink("/tmp/hgw_cfg_changed") == 0) {
             DmConfig dmc = {0};
-            if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0)
+            if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0 &&
+                dmconfig_changed(&dmc, &s_last_applied_dmc)) {
+                LOG_INFO("DM config updated (trigger): cpu=%u dur=%u enable=%d",
+                         dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
                 apply_dm_config(&dmc);
+            }
         }
         if (atomic_load_explicit(&g_dm_changed, memory_order_acquire)) {
             atomic_store_explicit(&g_dm_changed, 0, memory_order_relaxed);
             DmConfig dmc = {0};
-            if (datamodel_get_config(&dmc) && dmc.poll_interval_s > 0 &&
+            if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0 &&
                 dmconfig_changed(&dmc, &s_last_applied_dmc)) {
                 LOG_INFO("DM config updated (signal): cpu=%u dur=%u enable=%d",
                          dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
@@ -576,7 +623,7 @@ int main(int argc, char *argv[]) {
             if (now_poll - last_cfg_poll >= 5) {
                 last_cfg_poll = now_poll;
                 DmConfig dmc = {0};
-                bool cfg_ok = datamodel_get_config(&dmc);
+                bool cfg_ok = fetch_config_from_bus(&dmc);
                 if (!cfg_ok || dmc.poll_interval_s == 0) {
                     LOG_WARN("cfg-poll: DM read failed (ok=%d poll_s=%u cpu=%u)",
                              cfg_ok, dmc.poll_interval_s, dmc.cpu_threshold_pct);
