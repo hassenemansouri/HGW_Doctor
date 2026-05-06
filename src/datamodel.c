@@ -205,9 +205,6 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
     if (reason != action_param_write || !param || !args)
         return amxd_status_function_not_implemented;
 
-    /* Write the new value directly — no action chain, no re-entrancy */
-    amxc_var_convert(&param->value, args, amxc_var_type_of(&param->value));
-
     /* Signal the daemon's main loop that a config param changed */
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
     if (f) fclose(f);
@@ -220,7 +217,10 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
         if (f) fclose(f);
     }
 
-    return amxd_status_ok;
+    /* Return function_not_implemented so libamxd's default write handler updates
+     * param->value. Never call amxd_action_param_write() explicitly here —
+     * in libamxd 6.9.x that re-enters the action chain and crashes. */
+    return amxd_status_function_not_implemented;
 }
 
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
