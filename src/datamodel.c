@@ -201,23 +201,10 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    const amxc_var_t *const args,
                                    amxc_var_t *const retval,
                                    void *priv) {
-    (void)object; (void)retval; (void)priv;
-    /* Registered as "on action validate" — fires before the default write,
-     * which lets libamxd's built-in action_param_write run without re-entrancy.
-     * We only signal the main loop here; the actual value write is done by libamxd. */
-    if (reason != action_param_validate || !param || !args)
-        return amxd_status_function_not_implemented;
-
-    FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
-    if (f) fclose(f);
-
-    const char *name = amxd_param_get_name(param);
-    if (name && strcmp(name, "OnDemandTrigger") == 0 &&
-        amxc_var_dyncast(bool, args)) {
-        f = fopen("/tmp/hgw_diag_trigger", "w");
-        if (f) fclose(f);
-    }
-
+    (void)object; (void)param; (void)reason; (void)args; (void)retval; (void)priv;
+    /* Minimal validate-only callback — no struct access to avoid layout mismatches
+     * with libamxd 6.9.1 on device. Returning ok lets the default write run.
+     * Main loop polls DM every 5 s for config changes. */
     return amxd_status_ok;
 }
 
