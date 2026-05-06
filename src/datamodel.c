@@ -202,14 +202,15 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    amxc_var_t *const retval,
                                    void *priv) {
     (void)object; (void)retval; (void)priv;
-    if (reason != action_param_write || !param || !args)
+    /* Registered as "on action validate" — fires before the default write,
+     * which lets libamxd's built-in action_param_write run without re-entrancy.
+     * We only signal the main loop here; the actual value write is done by libamxd. */
+    if (reason != action_param_validate || !param || !args)
         return amxd_status_function_not_implemented;
 
-    /* Signal the daemon's main loop that a config param changed */
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
     if (f) fclose(f);
 
-    /* OnDemandTrigger=true: also kick the diagnostics path */
     const char *name = amxd_param_get_name(param);
     if (name && strcmp(name, "OnDemandTrigger") == 0 &&
         amxc_var_dyncast(bool, args)) {
@@ -217,10 +218,7 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
         if (f) fclose(f);
     }
 
-    /* Return function_not_implemented so libamxd's default write handler updates
-     * param->value. Never call amxd_action_param_write() explicitly here —
-     * in libamxd 6.9.x that re-enters the action chain and crashes. */
-    return amxd_status_function_not_implemented;
+    return amxd_status_ok;
 }
 
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {

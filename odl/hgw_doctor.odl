@@ -23,34 +23,34 @@ import "hgw_doctor.so" as "hgw_doctor";
 
         /* Global control */
         %persistent bool Enable = true {
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
         %read-only string Status = "Disabled";   /* "Enabled" | "Disabled" | "Error" */
         %persistent string Profile = "default" {
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
 
         /* Monitoring thresholds */
         %persistent uint32 CPUThreshold = 90 {       /* % above which anomaly is declared */
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
         %persistent uint32 MemThreshold = 90 {
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
         %persistent uint32 ThresholdDuration = 60 {  /* consecutive seconds threshold must hold */
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
         %persistent uint32 PollInterval = 5 {        /* seconds between metric samples */
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
 
         /* Recovery */
         /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None" */
         %persistent string ActionType = "ProcessRestart" {
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
         %persistent string ProcessList = "" {
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
 
         /* Recovery status (RO, updated after each action) */
@@ -61,14 +61,14 @@ import "hgw_doctor.so" as "hgw_doctor";
 
         /* Diagnostics & upload */
         bool OnDemandTrigger = false {
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
         %persistent string DiagOutputDir = "/tmp/hgw_diag" {
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
         %read-only string DiagArchivePath = "";
         %persistent string UploadURL = "" {
-            on action write call dm_on_param_changed;
+            on action validate call dm_on_param_changed;
         }
         %read-only string UploadStatus = "None";
         %read-only datetime UploadTimestamp = "0001-01-01T00:00:00Z";
