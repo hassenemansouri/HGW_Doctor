@@ -29,6 +29,7 @@ typedef struct {
 
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path);
 void datamodel_cleanup(amxd_dm_t *dm, amxo_parser_t *parser);
+void datamodel_start_sync(void);  /* call after amxb_register() to activate amxs TR-181 sync */
 
 void datamodel_set_status(const char *status_str);
 void datamodel_set_process_list(const char *process_list);

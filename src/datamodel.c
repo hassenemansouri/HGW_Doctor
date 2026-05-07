@@ -203,18 +203,23 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    const amxc_var_t *const args,
                                    amxc_var_t *const retval,
                                    void *priv) {
-    (void)object; (void)param; (void)reason; (void)args; (void)retval; (void)priv;
-    /* Minimal validate-only callback — no struct access to avoid layout mismatches
-     * with libamxd 6.9.1 on device. Returning ok lets the default write run.
-     * Main loop polls DM every 5 s for config changes. */
+    (void)object; (void)retval; (void)priv;
+    /* Registered as "on action write".  Write the value directly and return ok.
+     * Never return amxd_status_function_not_implemented from a write callback:
+     * libamxd 6.9.1 falls back to amxd_action_param_write which re-invokes the
+     * full action chain → infinite recursion → SIGSEGV. */
+    if (reason != action_param_write || !param || !args)
+        return amxd_status_ok;
+    amxc_var_copy(&param->value, args);
     return amxd_status_ok;
 }
 
 /* -------------------------------------------------------------------------
  * TR-181 sync: bidirectional amxs mapping between HGWDoctor and
- * Device.X_TELNET_HGWDoctor.  Called from datamodel_init after ODL parse.
+ * Device.X_TELNET_HGWDoctor.
+ * Must be called AFTER amxb_register() so amxs can subscribe via the bus.
  * ------------------------------------------------------------------------- */
-static void dm_tr181_sync_init(void) {
+void datamodel_start_sync(void) {
     /* Params synced bidirectionally: ACS writes Device.X_TELNET_HGWDoctor,
      * daemon reads from HGWDoctor (both converge via amxs). */
     static const struct { const char *name; int attr; } params[] = {
@@ -297,9 +302,7 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
     atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
 
-    /* Start amxs bidirectional sync: HGWDoctor ↔ Device.X_TELNET_HGWDoctor */
-    dm_tr181_sync_init();
-
+    /* amxs sync started later via datamodel_start_sync(), after amxb_register() */
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
 }

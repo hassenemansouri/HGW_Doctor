@@ -22,23 +22,45 @@
         object X_TELNET_HGWDoctor {
 
             /* ── Control (bidirectional) ───────────────────────────────── */
-            bool Enable = true;
-            string Profile = "default";
+            bool Enable = true {
+                on action write call dm_on_param_changed;
+            }
+            string Profile = "default" {
+                on action write call dm_on_param_changed;
+            }
 
             /* ── Thresholds (bidirectional) ────────────────────────────── */
-            uint32 CPUThreshold = 90;
-            uint32 MemThreshold = 90;
-            uint32 ThresholdDuration = 60;
-            uint32 PollInterval = 5;
+            uint32 CPUThreshold = 90 {
+                on action write call dm_on_param_changed;
+            }
+            uint32 MemThreshold = 90 {
+                on action write call dm_on_param_changed;
+            }
+            uint32 ThresholdDuration = 60 {
+                on action write call dm_on_param_changed;
+            }
+            uint32 PollInterval = 5 {
+                on action write call dm_on_param_changed;
+            }
 
             /* ── Recovery (bidirectional) ──────────────────────────────── */
-            string ActionType = "ProcessRestart";
-            string ProcessList = "";
+            string ActionType = "ProcessRestart" {
+                on action write call dm_on_param_changed;
+            }
+            string ProcessList = "" {
+                on action write call dm_on_param_changed;
+            }
 
             /* ── Diagnostics & upload (bidirectional) ──────────────────── */
-            bool OnDemandTrigger = false;
-            string DiagOutputDir = "/tmp/hgw_diag";
-            string UploadURL = "";
+            bool OnDemandTrigger = false {
+                on action write call dm_on_param_changed;
+            }
+            string DiagOutputDir = "/tmp/hgw_diag" {
+                on action write call dm_on_param_changed;
+            }
+            string UploadURL = "" {
+                on action write call dm_on_param_changed;
+            }
 
             /* ── Status (daemon → ACS, read-only to ACS) ───────────────── */
             %read-only string Status = "Disabled";
