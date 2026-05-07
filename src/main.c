@@ -427,8 +427,7 @@ int main(int argc, char *argv[]) {
         LOG_INFO("Connected to ubus");
         if (amxb_register(g_bus_ctx, &g_dm) == 0) {
             LOG_INFO("Data model registered on ubus");
-            /* Start amxs: HGWDoctor ↔ Device.X_TELNET_HGWDoctor bidirectional sync */
-            datamodel_start_sync();
+            /* datamodel_start_sync(); */  /* disabled: bidirectional sync overwrites user _set values */
             /* Local DM signal — fires when the daemon's own DM changes */
             amxp_slot_connect(&g_dm.sigmngr, "dm:object-changed", NULL,
                               on_dm_object_changed, NULL);

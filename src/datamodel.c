@@ -204,13 +204,29 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    amxc_var_t *const retval,
                                    void *priv) {
     (void)object; (void)retval; (void)priv;
-    /* Registered as "on action write".  Write the value directly and return ok.
-     * Never return amxd_status_function_not_implemented from a write callback:
-     * libamxd 6.9.1 falls back to amxd_action_param_write which re-invokes the
-     * full action chain → infinite recursion → SIGSEGV. */
+    /* Registered as "on action write".  Write the value directly, return ok.
+     * Never return amxd_status_function_not_implemented: libamxd 6.9.1 would
+     * fall back to amxd_action_param_write which re-invokes the full action
+     * chain → infinite recursion → SIGSEGV. */
     if (reason != action_param_write || !param || !args)
         return amxd_status_ok;
-    amxc_var_copy(&param->value, args);
+
+    /* amxc_var_init zeros param->value (type_id = 0) without calling clean —
+     * safe even if the memory was uninitialized, and prevents amxc_var_copy
+     * from misinterpreting a garbage type_id as a heap-type that needs freeing.
+     * Small cost: leaks the old heap allocation for string params on subsequent
+     * writes, acceptable for infrequent config changes. */
+    amxc_var_init(&param->value);
+
+    /* amxc_var_copy can crash when src is a cstring with data.s == NULL (which
+     * the ODL parser produces for empty-string defaults like ProcessList = "").
+     * Intercept that case and use amxc_var_set which tolerates a NULL src. */
+    if (amxc_var_type_of(args) == AMXC_VAR_ID_CSTRING) {
+        const char *s = amxc_var_constcast(cstring_t, args);
+        amxc_var_set(cstring_t, &param->value, s ? s : "");
+    } else {
+        amxc_var_copy(&param->value, args);
+    }
     return amxd_status_ok;
 }
 
