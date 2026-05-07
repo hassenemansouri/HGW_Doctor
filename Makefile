@@ -64,6 +64,7 @@ install: all
 	install -D -m 644 odl/hgw_doctor.odl                   /etc/amx/hgw_doctor/hgw_doctor.odl
 	install -D -m 644 odl/hgw_doctor_defaults.odl          /etc/amx/hgw_doctor/hgw_doctor_defaults.odl
 	install -D -m 644 odl/hgw_doctor_caps.odl              /etc/amx/hgw_doctor/hgw_doctor_caps.odl
+	install -D -m 644 odl/hgw_doctor_tr181.odl             /etc/amx/hgw_doctor/hgw_doctor_tr181.odl
 	install -D -m 755 actions/restart_process.sh           /usr/lib/hgw_doctor/actions/restart_process.sh
 	install -D -m 755 actions/clear_cache.sh               /usr/lib/hgw_doctor/actions/clear_cache.sh
 

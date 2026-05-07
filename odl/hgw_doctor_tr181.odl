@@ -1,0 +1,97 @@
+/*
+ * hgw_doctor_tr181.odl
+ *
+ * TR-181 vendor extension: Device.X_TELNET_HGWDoctor
+ *
+ * This object is the ACS/CWMP/USP-facing view of the daemon.  It is kept
+ * in bidirectional sync with the operational HGWDoctor object by libamxs
+ * (see datamodel.c:dm_tr181_sync_init).
+ *
+ * Mapping direction:
+ *   AMXS_SYNC_DEFAULT     — bidirectional (ACS can write, daemon reads back)
+ *   AMXS_SYNC_ONLY_A_TO_B — HGWDoctor → Device.X_TELNET_HGWDoctor only
+ *                            (daemon-owned read-only status fields)
+ *
+ * Install path: /etc/amx/hgw_doctor/hgw_doctor_tr181.odl
+ * Included from: hgw_doctor.odl
+ */
+
+%define {
+
+    object Device {
+        object X_TELNET_HGWDoctor {
+
+            /* ── Control (bidirectional) ───────────────────────────────── */
+            bool Enable = true;
+            string Profile = "default";
+
+            /* ── Thresholds (bidirectional) ────────────────────────────── */
+            uint32 CPUThreshold = 90;
+            uint32 MemThreshold = 90;
+            uint32 ThresholdDuration = 60;
+            uint32 PollInterval = 5;
+
+            /* ── Recovery (bidirectional) ──────────────────────────────── */
+            string ActionType = "ProcessRestart";
+            string ProcessList = "";
+
+            /* ── Diagnostics & upload (bidirectional) ──────────────────── */
+            bool OnDemandTrigger = false;
+            string DiagOutputDir = "/tmp/hgw_diag";
+            string UploadURL = "";
+
+            /* ── Status (daemon → ACS, read-only to ACS) ───────────────── */
+            %read-only string Status = "Disabled";
+            %read-only string LastActionType = "";
+            %read-only datetime LastActionTime = "0001-01-01T00:00:00Z";
+            %read-only string LastActionStatus = "None";
+            %read-only uint32 AnomalyCount = 0;
+            %read-only string DiagArchivePath = "";
+            %read-only string UploadStatus = "None";
+            %read-only datetime UploadTimestamp = "0001-01-01T00:00:00Z";
+
+            /* ── Live statistics (daemon → ACS) ────────────────────────── */
+            object Stats {
+                %read-only uint32 CurrentCPUUsage = 0;
+                %read-only uint32 CurrentMemUsage = 0;
+                %read-only uint32 CurrentMemFreeKB = 0;
+                %read-only uint32 TotalRecoveryActions = 0;
+                %read-only uint32 TotalDiagUploads = 0;
+                %read-only uint32 UptimeSeconds = 0;
+            }
+
+            object SelfStats {
+                %read-only uint32 CurrentCPUUsage = 0;
+                %read-only uint32 CurrentMemUsage = 0;
+                %read-only uint32 CurrentRSSKB = 0;
+            }
+
+            /* ── Monitoring profiles (bidirectional) ───────────────────── */
+            object Profiles[] {
+                %persistent %key string Name;
+                uint32 CPUThreshold = 90;
+                uint32 MemThreshold = 90;
+                uint32 ThresholdDuration = 60;
+                string ActionType = "ProcessRestart";
+                uint32 PollInterval = 5;
+                string ProcessList = "";
+                string Description = "";
+            }
+
+            /* ── Anomaly event log (daemon → ACS) ──────────────────────── */
+            object AnomalyLog[] {
+                %read-only datetime Timestamp;
+                %read-only string AnomalyType = "";
+                %read-only uint32 MetricValue = 0;
+                %read-only string ProcessName = "";
+                %read-only string ActionTaken = "";
+                %read-only string ActionResult = "";
+            }
+
+            /* ── RPCs (same C handlers as HGWDoctor) ───────────────────── */
+            uint32 TriggerDiagnostics() <!import:hgw_doctor:dm_trigger_diagnostics!>;
+            void ResetCounters() <!import:hgw_doctor:dm_reset_counters!>;
+            int32 SetProfile(%in string ProfileName) <!import:hgw_doctor:dm_set_profile!>;
+        }
+    }
+}

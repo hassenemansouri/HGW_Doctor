@@ -18,6 +18,7 @@
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
+#include <amxs/amxs.h>
 #include <amxd/amxd_types.h>
 #include <amxd/amxd_dm.h>
 #include <amxd/amxd_object.h>
@@ -37,6 +38,7 @@
  * Internal helpers
  * ------------------------------------------------------------------------- */
 static amxd_dm_t         *s_dm = NULL;
+static amxs_sync_ctx_t   *s_sync = NULL;
 static _Atomic uint32_t   s_anomaly_count = 0;
 static _Atomic uint32_t   s_total_actions = 0;
 static _Atomic uint32_t   s_total_uploads = 0;
@@ -208,6 +210,71 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
     return amxd_status_ok;
 }
 
+/* -------------------------------------------------------------------------
+ * TR-181 sync: bidirectional amxs mapping between HGWDoctor and
+ * Device.X_TELNET_HGWDoctor.  Called from datamodel_init after ODL parse.
+ * ------------------------------------------------------------------------- */
+static void dm_tr181_sync_init(void) {
+    /* Params synced bidirectionally: ACS writes Device.X_TELNET_HGWDoctor,
+     * daemon reads from HGWDoctor (both converge via amxs). */
+    static const struct { const char *name; int attr; } params[] = {
+        { "Enable",            AMXS_SYNC_DEFAULT      },
+        { "Profile",           AMXS_SYNC_DEFAULT      },
+        { "CPUThreshold",      AMXS_SYNC_DEFAULT      },
+        { "MemThreshold",      AMXS_SYNC_DEFAULT      },
+        { "ThresholdDuration", AMXS_SYNC_DEFAULT      },
+        { "PollInterval",      AMXS_SYNC_DEFAULT      },
+        { "ActionType",        AMXS_SYNC_DEFAULT      },
+        { "ProcessList",       AMXS_SYNC_DEFAULT      },
+        { "OnDemandTrigger",   AMXS_SYNC_DEFAULT      },
+        { "DiagOutputDir",     AMXS_SYNC_DEFAULT      },
+        { "UploadURL",         AMXS_SYNC_DEFAULT      },
+        /* Read-only status pushed from daemon → ACS */
+        { "Status",            AMXS_SYNC_ONLY_A_TO_B  },
+        { "LastActionType",    AMXS_SYNC_ONLY_A_TO_B  },
+        { "LastActionTime",    AMXS_SYNC_ONLY_A_TO_B  },
+        { "LastActionStatus",  AMXS_SYNC_ONLY_A_TO_B  },
+        { "AnomalyCount",      AMXS_SYNC_ONLY_A_TO_B  },
+        { "DiagArchivePath",   AMXS_SYNC_ONLY_A_TO_B  },
+        { "UploadStatus",      AMXS_SYNC_ONLY_A_TO_B  },
+        { "UploadTimestamp",   AMXS_SYNC_ONLY_A_TO_B  },
+    };
+
+    amxs_status_t st = amxs_sync_ctx_new(&s_sync,
+                                          "HGWDoctor.",
+                                          "Device.X_TELNET_HGWDoctor.",
+                                          AMXS_SYNC_DEFAULT | AMXS_SYNC_INIT_B);
+    if (st != amxs_status_ok) {
+        syslog(LOG_ERR, "dm_tr181_sync_init: amxs_sync_ctx_new failed (%d)", st);
+        return;
+    }
+
+    for (size_t i = 0; i < sizeof(params) / sizeof(params[0]); i++) {
+        amxs_sync_ctx_add_new_copy_param(s_sync,
+                                         params[i].name, params[i].name,
+                                         params[i].attr | AMXS_SYNC_INIT_B);
+    }
+
+    /* Sync Stats and SelfStats sub-objects (daemon → ACS only) */
+    amxs_sync_ctx_add_new_copy_object(s_sync,
+                                      "Stats.", "Stats.",
+                                      AMXS_SYNC_ONLY_A_TO_B | AMXS_SYNC_INIT_B);
+    amxs_sync_ctx_add_new_copy_object(s_sync,
+                                      "SelfStats.", "SelfStats.",
+                                      AMXS_SYNC_ONLY_A_TO_B | AMXS_SYNC_INIT_B);
+
+    st = amxs_sync_ctx_start_sync(s_sync);
+    if (st != amxs_status_ok) {
+        syslog(LOG_WARNING,
+               "dm_tr181_sync_init: amxs_sync_ctx_start_sync failed (%d) — TR-181 proxy not active",
+               st);
+        amxs_sync_ctx_delete(&s_sync);
+        return;
+    }
+
+    syslog(LOG_INFO, "TR-181 sync active: HGWDoctor ↔ Device.X_TELNET_HGWDoctor");
+}
+
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_anomaly_count, 0);
     atomic_store(&s_total_actions, 0);
@@ -230,11 +297,18 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
     atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
 
+    /* Start amxs bidirectional sync: HGWDoctor ↔ Device.X_TELNET_HGWDoctor */
+    dm_tr181_sync_init();
+
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
 }
 
 void datamodel_cleanup(amxd_dm_t *dm, amxo_parser_t *parser) {
+    if (s_sync) {
+        amxs_sync_ctx_stop_sync(s_sync);
+        amxs_sync_ctx_delete(&s_sync);
+    }
     amxo_parser_invoke_entry_points(parser, dm, AMXO_STOP);
     /* Persistent state is saved by libamxo (odl-save-on-stop = true) */
     s_dm = NULL;
