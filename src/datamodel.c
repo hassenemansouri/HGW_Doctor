@@ -187,23 +187,27 @@ static void dm_set_datetime_now(const char *param_path) {
 /* -------------------------------------------------------------------------
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
-/* Post-write notification callback for writable HGWDoctor params.
+/* Write action callback for writable HGWDoctor params.
  *
- * Registered for action_param_changed (post-write event) so the default
- * amxd_action_param_write handler runs first and stores the new value, then
- * this callback fires to signal the main loop. Registering for action_param_write
- * would replace the default handler entirely, preventing the value from being stored. */
-amxd_status_t dm_on_param_changed(amxd_object_t *const object,
-                                   amxd_param_t *const param,
-                                   amxd_action_t reason,
-                                   const amxc_var_t *const args,
-                                   amxc_var_t *const retval,
-                                   void *priv) {
-    (void)object; (void)param; (void)retval; (void)priv; (void)args;
-    if (reason != action_param_changed) return amxd_status_ok;
+ * Registered for action_param_write via amxd_param_add_action_cb, which
+ * replaces the default write handler. We perform the write explicitly via
+ * amxc_var_copy (same as amxd_action_param_write does internally), then
+ * signal the main loop to apply the new config. */
+static amxd_status_t dm_on_param_changed(amxd_object_t *const object,
+                                          amxd_param_t *const param,
+                                          amxd_action_t reason,
+                                          const amxc_var_t *const args,
+                                          amxc_var_t *const retval,
+                                          void *priv) {
+    (void)object; (void)retval; (void)priv;
+    if (reason != action_param_write) return amxd_status_ok;
+
+    amxc_var_copy(&param->value, args);
 
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
     if (f) fclose(f);
+    syslog(LOG_INFO, "dm_on_param_changed: param written, signalling reload");
+
     return amxd_status_ok;
 }
 
@@ -252,7 +256,7 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
         for (size_t i = 0; i < sizeof(writable) / sizeof(writable[0]); i++) {
             amxd_param_t *p = amxd_object_get_param_def(hgw, writable[i]);
             if (p) {
-                amxd_param_add_action_cb(p, action_param_changed,
+                amxd_param_add_action_cb(p, action_param_write,
                                          dm_on_param_changed, NULL);
                 n++;
             }
