@@ -116,15 +116,32 @@ static void dm_set_param(const char *param_path, amxc_var_t *val) {
         return;
     }
 
-    amxd_trans_t trans;
-    amxd_trans_init(&trans);
-    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
-    amxd_trans_select_object(&trans, obj);
-    amxd_trans_set_param(&trans, param_name, val);
-    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
-    if (st != amxd_status_ok)
-        syslog(LOG_ERR, "Failed to set param %s (status=%d)", param_path, st);
-    amxd_trans_clean(&trans);
+    amxd_param_t *param = amxd_object_get_param_def(obj, param_name);
+    if (!param) {
+        syslog(LOG_ERR, "dm_set_param: param not found '%s'", param_name);
+        return;
+    }
+
+    /* Read-only params (Stats.*) require a change_ro transaction.
+     * Writable params use amxd_param_set_value directly — a change_ro
+     * transaction on a writable param interferes with the normal ubus _set
+     * write path and causes external writes to be silently rejected. */
+    bool is_ro = amxd_param_is_attr_set(param, amxd_pattr_read_only);
+    if (is_ro) {
+        amxd_trans_t trans;
+        amxd_trans_init(&trans);
+        amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+        amxd_trans_select_object(&trans, obj);
+        amxd_trans_set_param(&trans, param_name, val);
+        amxd_status_t st = amxd_trans_apply(&trans, s_dm);
+        if (st != amxd_status_ok)
+            syslog(LOG_ERR, "Failed to set RO param %s (status=%d)", param_path, st);
+        amxd_trans_clean(&trans);
+    } else {
+        amxd_status_t st = amxd_param_set_value(param, val);
+        if (st != amxd_status_ok)
+            syslog(LOG_ERR, "Failed to set param %s (status=%d)", param_path, st);
+    }
 }
 
 static void dm_set_string(const char *param_path, const char *value) {
