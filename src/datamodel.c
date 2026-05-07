@@ -194,24 +194,24 @@ static void dm_set_datetime_now(const char *param_path) {
  * callbacks fire during parse-time default-value initialisation and corrupt
  * the param's internal variant state.
  *
- * At call time params are fully initialised, so amxc_var_copy is safe.
- * Guard against args->data.s == NULL for empty-string ODL defaults. */
+ * Delegates to amxd_action_param_write (the default write handler) because
+ * amxd_param_add_action_cb REPLACES the default — without this call the value
+ * is never stored in param->value and _get keeps returning the old default. */
 amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    amxd_param_t *const param,
                                    amxd_action_t reason,
                                    const amxc_var_t *const args,
                                    amxc_var_t *const retval,
                                    void *priv) {
-    (void)object; (void)retval; (void)priv;
-    if (reason != action_param_write || !param || !args)
-        return amxd_status_ok;
+    (void)object; (void)param; (void)retval; (void)priv; (void)args;
+    if (reason != action_param_write) return amxd_status_ok;
 
-    if (amxc_var_type_of(args) == AMXC_VAR_ID_CSTRING) {
-        const char *s = amxc_var_constcast(cstring_t, args);
-        amxc_var_set(cstring_t, &param->value, s ? s : "");
-    } else {
-        amxc_var_copy(&param->value, args);
-    }
+    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
+    if (st != amxd_status_ok) return st;
+
+    FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
+    if (f) fclose(f);
+    syslog(LOG_INFO, "dm_on_param_changed: threshold param written, signalling main loop");
     return amxd_status_ok;
 }
 
@@ -253,13 +253,19 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
         "OnDemandTrigger", "DiagOutputDir", "UploadURL",
     };
     amxd_object_t *hgw = amxd_dm_findf(dm, "HGWDoctor.");
-    if (hgw) {
+    if (!hgw) {
+        syslog(LOG_ERR, "datamodel_init: HGWDoctor not found — write callbacks NOT registered");
+    } else {
+        int n = 0;
         for (size_t i = 0; i < sizeof(writable) / sizeof(writable[0]); i++) {
             amxd_param_t *p = amxd_object_get_param_def(hgw, writable[i]);
-            if (p)
+            if (p) {
                 amxd_param_add_action_cb(p, action_param_write,
                                          dm_on_param_changed, NULL);
+                n++;
+            }
         }
+        (void)n;
     }
 
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
