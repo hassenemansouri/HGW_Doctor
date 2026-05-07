@@ -435,10 +435,6 @@ int main(int argc, char *argv[]) {
             /* Local DM signal — fires when the daemon's own DM changes */
             amxp_slot_connect(&g_dm.sigmngr, "dm:object-changed", NULL,
                               on_dm_object_changed, NULL);
-            /* Bus subscription — fires when amxd updates HGWDoctor (e.g. via _set) */
-            if (amxb_subscribe(g_bus_ctx, "HGWDoctor.", NULL,
-                               on_dm_object_changed, NULL) != 0)
-                LOG_WARN("Failed to subscribe to HGWDoctor bus events");
         } else {
             LOG_WARN("Failed to register data model on ubus");
         }
@@ -539,6 +535,7 @@ int main(int argc, char *argv[]) {
     time_t last_diag_collect = 0;
     time_t last_wd_pet       = 0;
     time_t last_cfg_poll     = 0;
+    int    s_dm_changed_delay = 0;  /* countdown before applying DM signal (loop iterations) */
 #define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
     while (g_running) {
         if (g_reload_cfg) {
@@ -615,12 +612,18 @@ int main(int argc, char *argv[]) {
         }
         if (atomic_load_explicit(&g_dm_changed, memory_order_acquire)) {
             atomic_store_explicit(&g_dm_changed, 0, memory_order_relaxed);
-            DmConfig dmc = {0};
-            if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0 &&
-                dmconfig_changed(&dmc, &s_last_applied_dmc)) {
-                LOG_INFO("DM config updated (signal): cpu=%u dur=%u enable=%d",
-                         dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
-                apply_dm_config(&dmc);
+            s_dm_changed_delay = 2;
+        }
+        if (s_dm_changed_delay > 0) {
+            s_dm_changed_delay--;
+            if (s_dm_changed_delay == 0) {
+                DmConfig dmc = {0};
+                if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0 &&
+                    dmconfig_changed(&dmc, &s_last_applied_dmc)) {
+                    LOG_INFO("DM config updated (signal): cpu=%u dur=%u enable=%d",
+                             dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
+                    apply_dm_config(&dmc);
+                }
             }
         }
         {
