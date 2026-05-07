@@ -1,8 +1,13 @@
 /*
  * hgw_doctor.odl
  *
- * TR-181 data model for HGW-Doctor: HGWDoctor (ubus), Device.X_TELNET_HGWDoctor (TR-181 proxy).
+ * TR-181 data model for HGW-Doctor: HGWDoctor (ubus).
  * Parsed by libamxo at startup; registered on ubus via the Ambiorix bus backend.
+ *
+ * Write callbacks are NOT declared here — they are registered programmatically
+ * via amxd_param_add_action_cb() after ODL parse to avoid libamxd 6.9.x
+ * re-entrancy crashes that occur when callbacks fire during parse-time
+ * default value initialisation.
  */
 
 %config {
@@ -22,36 +27,20 @@ import "hgw_doctor.so" as "hgw_doctor";
     object HGWDoctor {
 
         /* Global control */
-        %persistent bool Enable = true {
-            on action write call dm_on_param_changed;
-        }
+        %persistent bool Enable = true;
         %read-only string Status = "Disabled";   /* "Enabled" | "Disabled" | "Error" */
-        %persistent string Profile = "default" {
-            on action write call dm_on_param_changed;
-        }
+        %persistent string Profile = "default";
 
         /* Monitoring thresholds */
-        %persistent uint32 CPUThreshold = 90 {       /* % above which anomaly is declared */
-            on action write call dm_on_param_changed;
-        }
-        %persistent uint32 MemThreshold = 90 {
-            on action write call dm_on_param_changed;
-        }
-        %persistent uint32 ThresholdDuration = 60 {  /* consecutive seconds threshold must hold */
-            on action write call dm_on_param_changed;
-        }
-        %persistent uint32 PollInterval = 5 {        /* seconds between metric samples */
-            on action write call dm_on_param_changed;
-        }
+        %persistent uint32 CPUThreshold = 90;        /* % above which anomaly is declared */
+        %persistent uint32 MemThreshold = 90;
+        %persistent uint32 ThresholdDuration = 60;   /* consecutive seconds threshold must hold */
+        %persistent uint32 PollInterval = 5;         /* seconds between metric samples */
 
         /* Recovery */
         /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None" */
-        %persistent string ActionType = "ProcessRestart" {
-            on action write call dm_on_param_changed;
-        }
-        %persistent string ProcessList = "" {
-            on action write call dm_on_param_changed;
-        }
+        %persistent string ActionType = "ProcessRestart";
+        %persistent string ProcessList = "";
 
         /* Recovery status (RO, updated after each action) */
         %read-only string LastActionType = "";
@@ -60,16 +49,10 @@ import "hgw_doctor.so" as "hgw_doctor";
         %persistent %read-only uint32 AnomalyCount = 0;
 
         /* Diagnostics & upload */
-        bool OnDemandTrigger = false {
-            on action write call dm_on_param_changed;
-        }
-        %persistent string DiagOutputDir = "/tmp/hgw_diag" {
-            on action write call dm_on_param_changed;
-        }
+        bool OnDemandTrigger = false;
+        %persistent string DiagOutputDir = "/tmp/hgw_diag";
         %read-only string DiagArchivePath = "";
-        %persistent string UploadURL = "" {
-            on action write call dm_on_param_changed;
-        }
+        %persistent string UploadURL = "";
         %read-only string UploadStatus = "None";
         %read-only datetime UploadTimestamp = "0001-01-01T00:00:00Z";
 

@@ -187,14 +187,15 @@ static void dm_set_datetime_now(const char *param_path) {
 /* -------------------------------------------------------------------------
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
-/* ODL-level write callback for all writable params (registered via
- * "on action write call dm_on_param_changed" in hgw_doctor.odl).
+/* Write callback for writable HGWDoctor params.
  *
- * Runs in whichever process loaded the ODL (amxd or the daemon itself).
- * Writes the new value directly to param->value — avoids calling
- * amxd_param_set_value which re-enters amxd_dm_invoke_action and crashes.
- * Creates trigger files so the daemon's main loop re-reads config from
- * the authoritative bus DM via amxb_get. */
+ * Registered programmatically via amxd_param_add_action_cb() after ODL parse
+ * (not via ODL "on action write") to avoid the libamxd 6.9.x crash where
+ * callbacks fire during parse-time default-value initialisation and corrupt
+ * the param's internal variant state.
+ *
+ * At call time params are fully initialised, so amxc_var_copy is safe.
+ * Guard against args->data.s == NULL for empty-string ODL defaults. */
 amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    amxd_param_t *const param,
                                    amxd_action_t reason,
@@ -202,23 +203,9 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    amxc_var_t *const retval,
                                    void *priv) {
     (void)object; (void)retval; (void)priv;
-    /* Registered as "on action write".  Write the value directly, return ok.
-     * Never return amxd_status_function_not_implemented: libamxd 6.9.1 would
-     * fall back to amxd_action_param_write which re-invokes the full action
-     * chain → infinite recursion → SIGSEGV. */
     if (reason != action_param_write || !param || !args)
         return amxd_status_ok;
 
-    /* amxc_var_init zeros param->value (type_id = 0) without calling clean —
-     * safe even if the memory was uninitialized, and prevents amxc_var_copy
-     * from misinterpreting a garbage type_id as a heap-type that needs freeing.
-     * Small cost: leaks the old heap allocation for string params on subsequent
-     * writes, acceptable for infrequent config changes. */
-    amxc_var_init(&param->value);
-
-    /* amxc_var_copy can crash when src is a cstring with data.s == NULL (which
-     * the ODL parser produces for empty-string defaults like ProcessList = "").
-     * Intercept that case and use amxc_var_set which tolerates a NULL src. */
     if (amxc_var_type_of(args) == AMXC_VAR_ID_CSTRING) {
         const char *s = amxc_var_constcast(cstring_t, args);
         amxc_var_set(cstring_t, &param->value, s ? s : "");
@@ -256,6 +243,24 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_anomaly_count, dm_read_uint32(TR181_ANOMALY_COUNT));
     atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
     atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
+
+    /* Register write callbacks after parse so they never fire during ODL
+     * parse-time default-value initialisation (libamxd 6.9.x crash). */
+    static const char *const writable[] = {
+        "Enable", "Profile",
+        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
+        "ActionType", "ProcessList",
+        "OnDemandTrigger", "DiagOutputDir", "UploadURL",
+    };
+    amxd_object_t *hgw = amxd_dm_findf(dm, "HGWDoctor.");
+    if (hgw) {
+        for (size_t i = 0; i < sizeof(writable) / sizeof(writable[0]); i++) {
+            amxd_param_t *p = amxd_object_get_param_def(hgw, writable[i]);
+            if (p)
+                amxd_param_add_action_cb(p, action_param_write,
+                                         dm_on_param_changed, NULL);
+        }
+    }
 
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
