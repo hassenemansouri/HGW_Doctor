@@ -216,12 +216,27 @@ static void apply_dm_config(const DmConfig *dmc) {
 
     if (!dmc->enable && atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
         atomic_store_explicit(&g_monitoring_enabled, 0, memory_order_relaxed);
+
+        /* Full shutdown: stop threads, clear cache, reset logs */
+        analyzer_stop();
+        monitor_stop();
+
+        /* Clear diagnostic archives */
+        system("rm -f /tmp/hgw_diag/*.tar.gz");
+
+        /* Reset data model counters and logs */
+        datamodel_reset_all();
+
         datamodel_set_status(STATUS_DISABLED);
-        LOG_INFO("Monitoring disabled via DM");
+        LOG_INFO("Monitoring fully stopped and cache cleared");
     } else if (dmc->enable && !atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
         atomic_store_explicit(&g_monitoring_enabled, 1, memory_order_relaxed);
+
+        monitor_start();
+        analyzer_start();
+
         datamodel_set_status(STATUS_ENABLED);
-        LOG_INFO("Monitoring re-enabled via DM");
+        LOG_INFO("Monitoring re-started from scratch");
     }
 
     LOG_INFO("Live config updated from DM: "

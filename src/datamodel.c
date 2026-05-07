@@ -459,6 +459,42 @@ void datamodel_reset_on_demand_trigger(void) {
     dm_set_bool(TR181_ON_DEMAND_TRIGGER, false);
 }
 
+void datamodel_reset_all(void) {
+    atomic_store(&s_anomaly_count, 0);
+    atomic_store(&s_total_actions, 0);
+    atomic_store(&s_total_uploads, 0);
+    dm_set_uint32(TR181_ANOMALY_COUNT,      0);
+    dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, 0);
+    dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, 0);
+    dm_set_string(TR181_LAST_ACTION_TYPE,   ACTSTR_NONE);
+    dm_set_string(TR181_LAST_ACTION_STATUS, RESULT_STR_NONE);
+    dm_set_string(TR181_LAST_ACTION_TIME,   "");
+    dm_set_string(TR181_DIAG_ARCHIVE_PATH,  "");
+
+    if (!s_dm) return;
+    amxd_object_t *log_obj = amxd_dm_findf(s_dm, "%s", TR181_ANOMALY_LOG);
+    if (!log_obj) return;
+
+    uint32_t indices[HGW_ANOMALY_LOG_MAX];
+    size_t n = 0;
+    amxd_object_for_each(instance, it, log_obj) {
+        amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+        if (n < HGW_ANOMALY_LOG_MAX)
+            indices[n++] = amxd_object_get_index(inst);
+    }
+    if (n > 0) {
+        amxd_trans_t del_trans;
+        amxd_trans_init(&del_trans);
+        amxd_trans_set_attr(&del_trans, amxd_tattr_change_ro, true);
+        amxd_trans_select_object(&del_trans, log_obj);
+        for (size_t i = 0; i < n; i++)
+            amxd_trans_del_inst(&del_trans, indices[i], NULL);
+        amxd_trans_apply(&del_trans, s_dm);
+        amxd_trans_clean(&del_trans);
+    }
+    syslog(LOG_INFO, "All DM counters and logs reset");
+}
+
 /* -------------------------------------------------------------------------
  * RPC handlers (bound via ODL 'call' directives)
  * ------------------------------------------------------------------------- */
