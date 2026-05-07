@@ -15,7 +15,7 @@ define Package/hgw-doctor
   SECTION  := utils
   CATEGORY := Utilities
   TITLE    := HGW-Doctor - Home Gateway Health Monitor
-  DEPENDS  := +libamxd +libamxo +libamxc +libamxp +libamxs +libamxb +libcurl +libpthread +libubus +libubox
+  DEPENDS  := +libamxd +libamxo +libamxc +libamxp +libamxb +libcurl +libpthread +libubus +libubox
 endef
 
 define Package/hgw-doctor/description
@@ -45,7 +45,6 @@ define Build/Prepare
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/openwrt      $(PKG_BUILD_DIR)/openwrt
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/Makefile     $(PKG_BUILD_DIR)/Makefile
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/makefile.inc $(PKG_BUILD_DIR)/makefile.inc
-	$(CP) $(TOPDIR)/feeds/hgw_doctor/tests        $(PKG_BUILD_DIR)/tests
 	rm -rf $(PKG_BUILD_DIR)/build
 endef
 
@@ -56,12 +55,6 @@ define Build/Compile
 	$(MAKE) -C $(PKG_BUILD_DIR) \
 		CROSS_COMPILE="$(TARGET_CROSS)" \
 		STAGING_DIR="$(STAGING_DIR)" \
-		CFLAGS="$(TARGET_CFLAGS)" \
-		LDFLAGS="$(TARGET_LDFLAGS)"
-	$(MAKE) -C $(PKG_BUILD_DIR)/tests/test-service \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
-		STAGING_DIR="$(STAGING_DIR)" \
-		BIN_DIR="$(PKG_BUILD_DIR)/build/bin" \
 		CFLAGS="$(TARGET_CFLAGS)" \
 		LDFLAGS="$(TARGET_LDFLAGS)"
 endef
@@ -89,7 +82,6 @@ define Package/hgw-doctor/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor.odl              $(1)/etc/amx/hgw_doctor/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor_defaults.odl     $(1)/etc/amx/hgw_doctor/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor_caps.odl         $(1)/etc/amx/hgw_doctor/
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor_tr181.odl        $(1)/etc/amx/hgw_doctor/
 	# Separate directory for Ambiorix persistent-param save files (must not contain default ODLs)
 	$(INSTALL_DIR) $(1)/etc/amx/hgw_doctor/persist
 
@@ -101,14 +93,6 @@ define Package/hgw-doctor/install
 	# procd init scripts
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/openwrt/files/hgw-doctor.init $(1)/etc/init.d/hgw-doctor
-	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/openwrt/files/test-service.init $(1)/etc/init.d/test-service
-
-	# Test service binary
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/build/bin/test-service $(1)/usr/sbin/
-
-	# Integration test script
-	$(INSTALL_DIR) $(1)/usr/share/hgw_doctor
-	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/tests/run_tests.sh $(1)/usr/share/hgw_doctor/
 endef
 
 $(eval $(call BuildPackage,hgw-doctor))
