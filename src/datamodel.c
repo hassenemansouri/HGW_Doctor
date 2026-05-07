@@ -248,7 +248,6 @@ void datamodel_cleanup(amxd_dm_t *dm, amxo_parser_t *parser) {
  * ------------------------------------------------------------------------- */
 void datamodel_set_status(const char *status_str) {
     dm_set_string(TR181_STATUS, status_str);
-    syslog(LOG_INFO, "Status -> %s", status_str);
 }
 
 void datamodel_set_process_list(const char *process_list) {

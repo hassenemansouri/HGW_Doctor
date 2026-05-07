@@ -610,6 +610,12 @@ int main(int argc, char *argv[]) {
                 apply_dm_config(&dmc);
             }
         }
+        /* dm:object-changed fires when the Ambiorix client path is used
+         * (ubus-cli, TR-069/ACS via libamxb). Raw "ubus call HGWDoctor _set"
+         * bypasses the Ambiorix write mechanism and does not trigger this
+         * signal — for that path the 5-second periodic poll below is the
+         * fallback. fetch_config_from_bus() reads directly from the local
+         * amxd object so it sees the value as soon as it is committed. */
         if (atomic_load_explicit(&g_dm_changed, memory_order_acquire)) {
             atomic_store_explicit(&g_dm_changed, 0, memory_order_relaxed);
             s_dm_changed_delay = 2;
