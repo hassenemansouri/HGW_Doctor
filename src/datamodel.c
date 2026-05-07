@@ -187,30 +187,6 @@ static void dm_set_datetime_now(const char *param_path) {
 /* -------------------------------------------------------------------------
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
-/* Write action callback for writable HGWDoctor params.
- *
- * Registered for action_param_write via amxd_param_add_action_cb, which
- * replaces the default write handler. We perform the write explicitly via
- * amxc_var_copy (same as amxd_action_param_write does internally), then
- * signal the main loop to apply the new config. */
-static amxd_status_t dm_on_param_changed(amxd_object_t *const object,
-                                          amxd_param_t *const param,
-                                          amxd_action_t reason,
-                                          const amxc_var_t *const args,
-                                          amxc_var_t *const retval,
-                                          void *priv) {
-    (void)object; (void)retval; (void)priv;
-    if (reason != action_param_write) return amxd_status_ok;
-
-    amxc_var_copy(&param->value, args);
-
-    FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
-    if (f) fclose(f);
-    syslog(LOG_INFO, "dm_on_param_changed: param written, signalling reload");
-
-    return amxd_status_ok;
-}
-
 /* -------------------------------------------------------------------------
  * ------------------------------------------------------------------------- */
 void datamodel_start_sync(void) {
@@ -239,30 +215,6 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_anomaly_count, dm_read_uint32(TR181_ANOMALY_COUNT));
     atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
     atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
-
-    /* Register write callbacks after parse so they never fire during ODL
-     * parse-time default-value initialisation (libamxd 6.9.x crash). */
-    static const char *const writable[] = {
-        "Enable", "Profile",
-        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
-        "ActionType", "ProcessList",
-        "OnDemandTrigger", "DiagOutputDir", "UploadURL",
-    };
-    amxd_object_t *hgw = amxd_dm_findf(dm, "HGWDoctor.");
-    if (!hgw) {
-        syslog(LOG_ERR, "datamodel_init: HGWDoctor not found — write callbacks NOT registered");
-    } else {
-        int n = 0;
-        for (size_t i = 0; i < sizeof(writable) / sizeof(writable[0]); i++) {
-            amxd_param_t *p = amxd_object_get_param_def(hgw, writable[i]);
-            if (p) {
-                amxd_param_add_action_cb(p, action_param_write,
-                                         dm_on_param_changed, NULL);
-                n++;
-            }
-        }
-        (void)n;
-    }
 
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
@@ -633,7 +585,7 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
 
 /* -------------------------------------------------------------------------
  * Read all writable DM parameters back into a DmConfig snapshot.
- * Called by the main loop after dm_on_param_changed fires so that every
+ * Called by the main loop whenever g_dm_changed fires so that every
  * write via ACS or ubus is immediately reflected in the running daemon.
  * ------------------------------------------------------------------------- */
 bool datamodel_get_config(DmConfig *out) {

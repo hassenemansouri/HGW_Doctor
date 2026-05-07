@@ -80,43 +80,47 @@ static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
  * detect runtime ubus _set changes. */
 static DmConfig s_last_applied_dmc = {0};
 
-/* Read authoritative HGWDoctor config from the bus (amxd or daemon itself).
- * Falls back to local DM if bus is unavailable. */
+/* Read HGWDoctor config directly from the local DM — avoids the stale-read
+ * problem with amxb_get() over the ubus socket, where a value written via
+ * _set may not have propagated by the time the main loop polls. */
 static bool fetch_config_from_bus(DmConfig *out) {
-    amxc_var_t result;
-    amxc_var_init(&result);
-    bool ok = false;
+    amxd_object_t *obj = amxd_dm_findf(&g_dm, "HGWDoctor.");
+    if (!obj) return datamodel_get_config(out);
 
-    if (!g_bus_ctx) goto fallback;
-    if (amxb_get(g_bus_ctx, "HGWDoctor.", 0, &result, 5) != 0) goto fallback;
+    amxc_var_t val;
+    amxc_var_init(&val);
 
-    {
-        /* amxb_get returns: [ [ { param: value, ... } ] ] */
-        amxc_var_t *params = GETI_ARG(GETI_ARG(&result, 0), 0);
-        if (!params) goto fallback;
+    memset(out, 0, sizeof(*out));
 
-        memset(out, 0, sizeof(*out));
-        out->cpu_threshold_pct    = GET_UINT32(params, "CPUThreshold");
-        out->mem_threshold_pct    = GET_UINT32(params, "MemThreshold");
-        out->threshold_duration_s = GET_UINT32(params, "ThresholdDuration");
-        out->poll_interval_s      = GET_UINT32(params, "PollInterval");
-        out->enable               = GET_BOOL(params, "Enable");
-        const char *s;
-        s = GET_CHAR(params, "ActionType");
-        if (s) { strncpy(out->action_type, s, sizeof(out->action_type) - 1); }
-        s = GET_CHAR(params, "ProcessList");
-        if (s) { strncpy(out->process_list, s, sizeof(out->process_list) - 1); }
-        s = GET_CHAR(params, "UploadURL");
-        if (s) { strncpy(out->upload_url, s, sizeof(out->upload_url) - 1); }
-        s = GET_CHAR(params, "DiagOutputDir");
-        if (s) { strncpy(out->diag_output_dir, s, sizeof(out->diag_output_dir) - 1); }
-        ok = (out->poll_interval_s > 0);
-    }
+#define READ_U32(param, field) do { \
+    if (amxd_object_get_param(obj, param, &val) == amxd_status_ok) \
+        out->field = amxc_var_dyncast(uint32_t, &val); \
+} while(0)
 
-fallback:
-    amxc_var_clean(&result);
-    if (!ok) ok = datamodel_get_config(out);
-    return ok;
+#define READ_STR(param, field) do { \
+    if (amxd_object_get_param(obj, param, &val) == amxd_status_ok) { \
+        const char *s = amxc_var_constcast(cstring_t, &val); \
+        if (s) strncpy(out->field, s, sizeof(out->field) - 1); \
+    } \
+} while(0)
+
+    READ_U32("CPUThreshold",      cpu_threshold_pct);
+    READ_U32("MemThreshold",      mem_threshold_pct);
+    READ_U32("ThresholdDuration", threshold_duration_s);
+    READ_U32("PollInterval",      poll_interval_s);
+    READ_STR("ActionType",        action_type);
+    READ_STR("ProcessList",       process_list);
+    READ_STR("UploadURL",         upload_url);
+    READ_STR("DiagOutputDir",     diag_output_dir);
+
+#undef READ_U32
+#undef READ_STR
+
+    if (amxd_object_get_param(obj, "Enable", &val) == amxd_status_ok)
+        out->enable = amxc_var_dyncast(bool, &val);
+
+    amxc_var_clean(&val);
+    return out->poll_interval_s > 0;
 }
 /* Fallbacks for apply_dm_config() — set from flat config at startup/SIGHUP */
 static char s_scripts_dir[HGW_MAX_PATH]                                    = {0};

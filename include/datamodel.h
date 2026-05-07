@@ -50,9 +50,6 @@ void datamodel_sync_startup(const char *action_type, const char *upload_url,
                              const char *diag_output_dir);
 void datamodel_sync_counters(void);
 
-amxd_status_t dm_on_param_changed(amxd_object_t *obj, amxd_param_t *param,
-                                  amxd_action_t reason, const amxc_var_t *args,
-                                  amxc_var_t *retval, void *priv);
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);
 amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
