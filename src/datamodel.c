@@ -187,16 +187,12 @@ static void dm_set_datetime_now(const char *param_path) {
 /* -------------------------------------------------------------------------
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
-/* Write callback for writable HGWDoctor params.
+/* Post-write notification callback for writable HGWDoctor params.
  *
- * Registered programmatically via amxd_param_add_action_cb() after ODL parse
- * (not via ODL "on action write") to avoid the libamxd 6.9.x crash where
- * callbacks fire during parse-time default-value initialisation and corrupt
- * the param's internal variant state.
- *
- * Delegates to amxd_action_param_write (the default write handler) because
- * amxd_param_add_action_cb REPLACES the default — without this call the value
- * is never stored in param->value and _get keeps returning the old default. */
+ * Registered for action_param_changed (post-write event) so the default
+ * amxd_action_param_write handler runs first and stores the new value, then
+ * this callback fires to signal the main loop. Registering for action_param_write
+ * would replace the default handler entirely, preventing the value from being stored. */
 amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    amxd_param_t *const param,
                                    amxd_action_t reason,
@@ -204,14 +200,10 @@ amxd_status_t dm_on_param_changed(amxd_object_t *const object,
                                    amxc_var_t *const retval,
                                    void *priv) {
     (void)object; (void)param; (void)retval; (void)priv; (void)args;
-    if (reason != action_param_write) return amxd_status_ok;
-
-    amxd_status_t st = amxd_action_param_write(object, param, reason, args, retval, priv);
-    if (st != amxd_status_ok) return st;
+    if (reason != action_param_changed) return amxd_status_ok;
 
     FILE *f = fopen("/tmp/hgw_cfg_changed", "w");
     if (f) fclose(f);
-    syslog(LOG_INFO, "dm_on_param_changed: threshold param written, signalling main loop");
     return amxd_status_ok;
 }
 
@@ -260,7 +252,7 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
         for (size_t i = 0; i < sizeof(writable) / sizeof(writable[0]); i++) {
             amxd_param_t *p = amxd_object_get_param_def(hgw, writable[i]);
             if (p) {
-                amxd_param_add_action_cb(p, action_param_write,
+                amxd_param_add_action_cb(p, action_param_changed,
                                          dm_on_param_changed, NULL);
                 n++;
             }
