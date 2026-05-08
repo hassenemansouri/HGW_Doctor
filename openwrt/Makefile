@@ -90,6 +90,11 @@ define Package/hgw-doctor/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/actions/restart_process.sh  $(1)/usr/lib/hgw_doctor/actions/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/actions/clear_cache.sh      $(1)/usr/lib/hgw_doctor/actions/
 
+	# TR-181 device proxy mapping
+	$(INSTALL_DIR) $(1)/etc/amx/tr181-device/extensions
+	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/01_device-hgw_doctor_mapping.odl \
+		$(1)/etc/amx/tr181-device/extensions/
+
 	# procd init scripts
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/openwrt/files/hgw-doctor.init $(1)/etc/init.d/hgw-doctor
