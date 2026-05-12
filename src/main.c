@@ -413,6 +413,57 @@ static void on_upload_done(UploadStatus status, const char *path, void *userdata
 }
 
 /* -------------------------------------------------------------------------
+ * Device.X_TELNET_HGWDoctor. change callback
+ * Fires when the ACS writes a param via TR-069 proxy object.
+ * Mirrors the new value to HGWDoctor. so the local DM and modules pick it up.
+ * ------------------------------------------------------------------------- */
+static void on_device_object_changed(const char *sig_name,
+                                      const amxc_var_t *data,
+                                      void *priv) {
+    (void)sig_name; (void)data; (void)priv;
+
+    amxc_var_t result;
+    amxc_var_t result2;
+    amxc_var_t params;
+    amxc_var_init(&result);
+    amxc_var_init(&result2);
+    amxc_var_init(&params);
+
+    if (amxb_get(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", 0, &result, 5) != 0) {
+        LOG_WARN("on_device_object_changed: amxb_get failed");
+        goto done;
+    }
+
+    amxc_var_t *list0 = amxc_var_get_index(&result, 0, AMXC_VAR_FLAG_DEFAULT);
+    if (!list0) goto done;
+    amxc_var_t *obj = amxc_var_get_key(list0, "Device.X_TELNET_HGWDoctor.",
+                                        AMXC_VAR_FLAG_DEFAULT);
+    if (!obj) goto done;
+
+    amxc_var_set_type(&params, AMXC_VAR_ID_HTABLE);
+
+    static const char *const s_mirror_params[] = {
+        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
+        "ActionType", "ProcessList", "Enable", "UploadURL", NULL
+    };
+    for (int i = 0; s_mirror_params[i]; i++) {
+        amxc_var_t *v = amxc_var_get_key(obj, s_mirror_params[i], AMXC_VAR_FLAG_DEFAULT);
+        if (v)
+            amxc_var_set_key(&params, s_mirror_params[i], v, AMXC_VAR_FLAG_COPY);
+    }
+
+    if (amxb_set(g_bus_ctx, "HGWDoctor.", &params, &result2, 5) != 0)
+        LOG_WARN("on_device_object_changed: amxb_set to HGWDoctor failed");
+
+    atomic_store_explicit(&g_dm_changed, 1, memory_order_release);
+
+done:
+    amxc_var_clean(&params);
+    amxc_var_clean(&result2);
+    amxc_var_clean(&result);
+}
+
+/* -------------------------------------------------------------------------
  * main()
  * ------------------------------------------------------------------------- */
 int main(int argc, char *argv[]) {
@@ -450,6 +501,9 @@ int main(int argc, char *argv[]) {
             /* Local DM signal — fires when the daemon's own DM changes */
             amxp_slot_connect(&g_dm.sigmngr, "dm:object-changed", NULL,
                               on_dm_object_changed, NULL);
+            /* Subscribe to ACS proxy object so TR-069 writes are mirrored to HGWDoctor */
+            amxb_subscribe(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", NULL,
+                           on_device_object_changed, NULL);
         } else {
             LOG_WARN("Failed to register data model on ubus");
         }
