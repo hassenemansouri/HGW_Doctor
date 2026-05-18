@@ -32,7 +32,7 @@ endef
 
 # -----------------------------------------------------------------------
 # Prepare: copy the full source tree into the build directory
-# $(CURDIR) = .../package/hgw-doctor (the openwrt/ dir in your repo)
+# $(CURDIR) = .../package/hgw-doctor (the hgw-doctor/ dir in your repo)
 # So the project root is one level up: $(CURDIR)/..
 # -----------------------------------------------------------------------
 define Build/Prepare
@@ -42,7 +42,7 @@ define Build/Prepare
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/odl          $(PKG_BUILD_DIR)/odl
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/conf         $(PKG_BUILD_DIR)/conf
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/actions      $(PKG_BUILD_DIR)/actions
-	$(CP) $(TOPDIR)/feeds/hgw_doctor/openwrt      $(PKG_BUILD_DIR)/openwrt
+	$(CP) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor   $(PKG_BUILD_DIR)/hgw-doctor
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/Makefile     $(PKG_BUILD_DIR)/Makefile
 	$(CP) $(TOPDIR)/feeds/hgw_doctor/makefile.inc $(PKG_BUILD_DIR)/makefile.inc
 	rm -rf $(PKG_BUILD_DIR)/build
@@ -93,12 +93,12 @@ define Package/hgw-doctor/install
 
 	# TR-181 device proxy mapping
 	$(INSTALL_DIR) $(1)/etc/amx/tr181-device/extensions
-	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/openwrt/files/01_device-hgw_doctor_mapping.odl \
+	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/01_device-hgw_doctor_mapping.odl \
 		$(1)/etc/amx/tr181-device/extensions/
 
 	# procd init scripts
 	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/openwrt/files/hgw-doctor.init $(1)/etc/init.d/hgw-doctor
+	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/hgw-doctor.init $(1)/etc/init.d/hgw-doctor
 endef
 
 $(eval $(call BuildPackage,hgw-doctor))
