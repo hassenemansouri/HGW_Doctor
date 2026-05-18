@@ -92,7 +92,7 @@ define Package/hgw-doctor/install
 
 	# TR-181 device proxy mapping
 	$(INSTALL_DIR) $(1)/etc/amx/tr181-device/extensions
-	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/01_device-hgw_doctor_mapping.odl \
+	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/openwrt/files/01_device-hgw_doctor_mapping.odl \
 		$(1)/etc/amx/tr181-device/extensions/
 
 	# procd init scripts
