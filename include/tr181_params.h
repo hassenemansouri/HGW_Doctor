@@ -26,6 +26,7 @@
 /* ── Recovery config ─────────────────────────────────────────────────────── */
 #define TR181_ACTION_TYPE         TR181_ROOT ".ActionType"
 #define TR181_PROCESS_LIST        TR181_ROOT ".ProcessList"
+#define TR181_ON_DEMAND_TARGET    TR181_ROOT ".OnDemandTarget"
 #define TR181_REBOOT_DELAY_SEC    TR181_ROOT ".RebootDelaySec"
 #define TR181_REBOOT_COUNT        TR181_ROOT ".RebootCount"
 #define TR181_LAST_REBOOT_TIME    TR181_ROOT ".LastRebootTime"

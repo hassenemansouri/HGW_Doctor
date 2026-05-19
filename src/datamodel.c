@@ -853,6 +853,25 @@ bool datamodel_was_deferred_reboot_boot(void) {
     return s_booted_after_reboot;
 }
 
+void datamodel_get_on_demand_target(char *buf, size_t len) {
+    if (!buf || len == 0) return;
+    buf[0] = '\0';
+    if (!s_dm) return;
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "HGWDoctor.");
+    if (!obj) return;
+    amxc_var_t val;
+    amxc_var_init(&val);
+    if (amxd_object_get_param(obj, "OnDemandTarget", &val) == amxd_status_ok) {
+        const char *s = amxc_var_constcast(cstring_t, &val);
+        if (s) strncpy(buf, s, len - 1);
+    }
+    amxc_var_clean(&val);
+}
+
+void datamodel_reset_on_demand_target(void) {
+    dm_set_string(TR181_ON_DEMAND_TARGET, "");
+}
+
 /* -------------------------------------------------------------------------
  * OnDemandTrigger helper — polled by the main loop each iteration.
  * Reads the param; if true, resets it and returns true so the caller

@@ -18,10 +18,13 @@ int  recovery_dispatch(const AnomalyEvent *event);
 void recovery_update_config(const RecoveryConfig *cfg);
 void recovery_cleanup(void);
 
-/* On-demand dispatch: explicit action + process name, bypasses stored config */
+/* On-demand dispatch: explicit action + process name, bypasses stored config.
+ * If cb is NULL the stored recovery_callback is used instead. */
 int  recovery_dispatch_ondemand(ActionType action,
                                  const char *proc_name,
-                                 const char *scripts_dir);
+                                 const char *scripts_dir,
+                                 recovery_callback cb,
+                                 void *userdata);
 
 /* Deferred reboot helpers */
 typedef enum {

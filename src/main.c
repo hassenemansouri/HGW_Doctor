@@ -78,6 +78,14 @@ typedef struct {
 static PendingDmUpdate  s_pending       = {0};
 static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Per-dispatch userdata for on-demand recovery threads */
+typedef struct { AnomalyEvent ev; } OnDemandData;
+typedef struct { RecoveryResult result; AnomalyEvent event; } OnDemandResult;
+#define ONDEMAND_QUEUE_SIZE HGW_MAX_PROC_LIST
+static OnDemandResult    s_ondemand_queue[ONDEMAND_QUEUE_SIZE];
+static int               s_ondemand_count = 0;
+static pthread_mutex_t   s_ondemand_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /* Last DM config applied to the running modules — used by periodic poll to
  * detect runtime ubus _set changes. */
 static DmConfig s_last_applied_dmc = {0};
@@ -223,31 +231,50 @@ static void execute_on_demand_action(const char *action_str, const DmConfig *dmc
         atomic_store_explicit(&g_reboot_pending, 1, memory_order_release);
         LOG_INFO("Deferred reboot armed: %us countdown (%d ticks)", delay_s, s_reboot_ticks);
 
-    } else {
-        /* ProcessRestart or CacheClear — dispatch asynchronously */
-        char first_proc[HGW_MAX_PROC_NAME] = {0};
-        if (action == ACTION_PROCESS_RESTART && dmc->process_list[0] != '\0') {
-            const char *comma = strchr(dmc->process_list, ',');
-            size_t len = comma ? (size_t)(comma - dmc->process_list)
-                               : strlen(dmc->process_list);
-            if (len >= HGW_MAX_PROC_NAME) len = HGW_MAX_PROC_NAME - 1;
-            while (len > 0 && dmc->process_list[len - 1] == ' ') len--;
-            memcpy(first_proc, dmc->process_list, len);
+    } else if (action == ACTION_PROCESS_RESTART) {
+        char target[HGW_MAX_PROC_NAME] = {0};
+        datamodel_get_on_demand_target(target, sizeof(target));
+
+        if (target[0] != '\0') {
+            /* Single named target */
+            datamodel_reset_on_demand_target();
+            OnDemandData *data = calloc(1, sizeof(*data));
+            if (data) {
+                data->ev.type = ANOMALY_ON_DEMAND;
+                clock_gettime(CLOCK_REALTIME, &data->ev.detected_at);
+                strncpy(data->ev.process_name, target, HGW_MAX_PROC_NAME - 1);
+                recovery_dispatch_ondemand(ACTION_PROCESS_RESTART, target,
+                                           s_scripts_dir, on_ondemand_done, data);
+            }
+        } else {
+            /* Restart every service in ProcessList — one dispatch per process */
+            char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
+            int  proc_count = 0;
+            parse_process_list(dmc->process_list, proc_names, &proc_count);
+            if (proc_count == 0) {
+                memcpy(proc_names, s_fallback_proc_names, sizeof(proc_names));
+                proc_count = s_fallback_proc_count;
+            }
+            LOG_INFO("On-demand restart all services (%d)", proc_count);
+            for (int i = 0; i < proc_count; i++) {
+                OnDemandData *data = calloc(1, sizeof(*data));
+                if (!data) continue;
+                data->ev.type = ANOMALY_ON_DEMAND;
+                clock_gettime(CLOCK_REALTIME, &data->ev.detected_at);
+                strncpy(data->ev.process_name, proc_names[i], HGW_MAX_PROC_NAME - 1);
+                recovery_dispatch_ondemand(ACTION_PROCESS_RESTART, proc_names[i],
+                                           s_scripts_dir, on_ondemand_done, data);
+            }
         }
-
-        /* Stamp s_last_event as OnDemand so on_recovery_done() logs correctly */
-        AnomalyEvent on_demand_ev = {0};
-        on_demand_ev.type = ANOMALY_ON_DEMAND;
-        clock_gettime(CLOCK_REALTIME, &on_demand_ev.detected_at);
-        if (first_proc[0])
-            strncpy(on_demand_ev.process_name, first_proc, HGW_MAX_PROC_NAME - 1);
-        pthread_mutex_lock(&s_event_mutex);
-        s_last_event = on_demand_ev;
-        pthread_mutex_unlock(&s_event_mutex);
-
-        recovery_dispatch_ondemand(action,
-                                   first_proc[0] ? first_proc : NULL,
-                                   s_scripts_dir);
+    } else {
+        /* CacheClear */
+        OnDemandData *data = calloc(1, sizeof(*data));
+        if (data) {
+            data->ev.type = ANOMALY_ON_DEMAND;
+            clock_gettime(CLOCK_REALTIME, &data->ev.detected_at);
+            recovery_dispatch_ondemand(ACTION_CACHE_CLEAR, NULL,
+                                       s_scripts_dir, on_ondemand_done, data);
+        }
     }
 }
 
@@ -444,6 +471,26 @@ static void on_recovery_done(const RecoveryResult *result, void *userdata) {
     s_pending.recovery_event  = ev_copy;
     s_pending.recovery_valid  = 1;
     pthread_mutex_unlock(&s_pending_mutex);
+}
+
+/* -------------------------------------------------------------------------
+ * On-demand recovery done callback — one per dispatched thread, each with
+ * its own heap-allocated OnDemandData.  Queues result for the main loop.
+ * ------------------------------------------------------------------------- */
+static void on_ondemand_done(const RecoveryResult *result, void *userdata) {
+    OnDemandData *data = (OnDemandData *)userdata;
+    AnomalyEvent ev = {0};
+    if (data) {
+        ev = data->ev;
+        free(data);
+    }
+    pthread_mutex_lock(&s_ondemand_mutex);
+    if (s_ondemand_count < ONDEMAND_QUEUE_SIZE) {
+        s_ondemand_queue[s_ondemand_count].result = *result;
+        s_ondemand_queue[s_ondemand_count].event  = ev;
+        s_ondemand_count++;
+    }
+    pthread_mutex_unlock(&s_ondemand_mutex);
 }
 
 /* -------------------------------------------------------------------------
@@ -850,6 +897,27 @@ int main(int argc, char *argv[]) {
                 datamodel_record_upload(snap.upload_status, snap.upload_path);
         }
 
+        /* Drain on-demand recovery results (ProcessRestart / CacheClear) */
+        {
+            OnDemandResult snap_q[ONDEMAND_QUEUE_SIZE];
+            int snap_count = 0;
+            pthread_mutex_lock(&s_ondemand_mutex);
+            if (s_ondemand_count > 0) {
+                snap_count = s_ondemand_count;
+                memcpy(snap_q, s_ondemand_queue, snap_count * sizeof(OnDemandResult));
+                s_ondemand_count = 0;
+            }
+            pthread_mutex_unlock(&s_ondemand_mutex);
+            for (int i = 0; i < snap_count; i++) {
+                datamodel_record_action(&snap_q[i].result);
+                datamodel_append_anomaly_log(
+                    &snap_q[i].event,
+                    action_type_to_string(snap_q[i].result.action),
+                    snap_q[i].result.result == RESULT_SUCCESS ? "Success" : "Failure"
+                );
+            }
+        }
+
         /* Update data model stats at poll_interval_s cadence, not every 100ms */
         time_t now = time(NULL);
         if (now - last_stats_update >= (time_t)cfg.poll_interval_s) {
@@ -942,6 +1010,7 @@ int main(int argc, char *argv[]) {
 
     pthread_mutex_destroy(&s_event_mutex);
     pthread_mutex_destroy(&s_pending_mutex);
+    pthread_mutex_destroy(&s_ondemand_mutex);
     logger_cleanup();
 
     return EXIT_SUCCESS;

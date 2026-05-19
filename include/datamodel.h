@@ -59,6 +59,10 @@ void     datamodel_append_ondemand_log(const char *action_taken,
                                        const char *action_result);
 bool     datamodel_was_deferred_reboot_boot(void);
 
+/* On-demand ProcessRestart target */
+void datamodel_get_on_demand_target(char *buf, size_t len);
+void datamodel_reset_on_demand_target(void);
+
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);
 amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,

@@ -43,6 +43,7 @@ import "hgw_doctor.so" as "hgw_doctor";
          * and resets ActionType back to "None" automatically. */
         %persistent string ActionType = "None";
         %persistent string ProcessList = "";
+        %persistent string OnDemandTarget = "";  /* specific target for on-demand ProcessRestart */
         %persistent uint32 RebootDelaySec = 10;
         %persistent %read-only uint32 RebootCount = 0;
         %persistent %read-only string LastRebootTime = "";

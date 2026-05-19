@@ -292,17 +292,21 @@ int recovery_do_reboot(const char *scripts_dir) {
  * ------------------------------------------------------------------------- */
 int recovery_dispatch_ondemand(ActionType action,
                                 const char *proc_name,
-                                const char *scripts_dir) {
+                                const char *scripts_dir,
+                                recovery_callback cb,
+                                void *userdata) {
     int prev = atomic_fetch_add(&s_active_threads, 1);
     if (prev >= RECOVERY_MAX_CONCURRENT) {
         atomic_fetch_sub(&s_active_threads, 1);
         LOG_WARN("Recovery: max concurrent actions reached, dropping on-demand dispatch");
+        free(userdata);  /* caller expects us to own userdata on failure too */
         return -1;
     }
 
     RecoveryTask *task = calloc(1, sizeof(*task));
     if (!task) {
         atomic_fetch_sub(&s_active_threads, 1);
+        free(userdata);
         return -1;
     }
 
@@ -324,10 +328,15 @@ int recovery_dispatch_ondemand(ActionType action,
     if (scripts_dir && scripts_dir[0] != '\0')
         strncpy(task->cfg.scripts_dir, scripts_dir, HGW_MAX_PATH - 1);
 
-    pthread_mutex_lock(&s_cfg_mutex);
-    task->callback = s_callback;
-    task->userdata  = s_userdata;
-    pthread_mutex_unlock(&s_cfg_mutex);
+    if (cb) {
+        task->callback = cb;
+        task->userdata  = userdata;
+    } else {
+        pthread_mutex_lock(&s_cfg_mutex);
+        task->callback = s_callback;
+        task->userdata  = s_userdata;
+        pthread_mutex_unlock(&s_cfg_mutex);
+    }
 
     pthread_t t;
     pthread_attr_t attr;
