@@ -90,6 +90,7 @@ define Package/hgw-doctor/install
 	$(INSTALL_DIR) $(1)/usr/lib/hgw_doctor/actions
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/actions/restart_process.sh  $(1)/usr/lib/hgw_doctor/actions/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/actions/clear_cache.sh      $(1)/usr/lib/hgw_doctor/actions/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/actions/reboot_system.sh    $(1)/usr/lib/hgw_doctor/actions/
 
 	# TR-181 device proxy mapping
 	$(INSTALL_DIR) $(1)/etc/amx/tr181-device/extensions

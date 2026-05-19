@@ -11,13 +11,23 @@
 #include "logger.h"
 #include "recovery.h"
 
-#define RECOVERY_MAX_CONCURRENT 4
+#define RECOVERY_MAX_CONCURRENT  4
+#define REBOOT_UPTIME_MIN_S      60
+#define REBOOT_COOLDOWN_S        300
+#define REBOOT_MAX_PER_HOUR      3
+#define REBOOT_HOUR_WINDOW_S     3600
+#define REBOOT_RING_SIZE         4
 
 static RecoveryConfig    s_cfg;
 static recovery_callback s_callback = NULL;
 static void             *s_userdata = NULL;
 static pthread_mutex_t   s_cfg_mutex = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int       s_active_threads = ATOMIC_VAR_INIT(0);
+
+/* Reboot rate-limit ring — records timestamps of recent HGWDoctor reboots */
+static time_t          s_reboot_ring[REBOOT_RING_SIZE] = {0};
+static int             s_reboot_ring_count = 0;
+static pthread_mutex_t s_reboot_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
     AnomalyEvent      event;
@@ -198,6 +208,139 @@ static void *recovery_run(void *arg) {
     free(task);
     atomic_fetch_sub(&s_active_threads, 1);
     return NULL;
+}
+
+/* -------------------------------------------------------------------------
+ * Reboot guard helpers
+ * ------------------------------------------------------------------------- */
+
+static time_t parse_iso8601_utc(const char *s) {
+    int y, mo, d, h, mi, sec;
+    struct tm tm = {0};
+    if (!s || s[0] == '\0') return 0;
+    if (sscanf(s, "%d-%d-%dT%d:%d:%dZ", &y, &mo, &d, &h, &mi, &sec) != 6)
+        return 0;
+    tm.tm_year = y - 1900;
+    tm.tm_mon  = mo - 1;
+    tm.tm_mday = d;
+    tm.tm_hour = h;
+    tm.tm_min  = mi;
+    tm.tm_sec  = sec;
+    return timegm(&tm);
+}
+
+RebootGuardResult recovery_reboot_guard_check(const char *last_reboot_time_str) {
+    /* 1. Uptime check using CLOCK_BOOTTIME */
+    struct timespec boot_ts = {0};
+    if (clock_gettime(CLOCK_BOOTTIME, &boot_ts) == 0) {
+        if (boot_ts.tv_sec < REBOOT_UPTIME_MIN_S) {
+            LOG_WARN("Reboot rejected: uptime %lds < %ds",
+                     (long)boot_ts.tv_sec, REBOOT_UPTIME_MIN_S);
+            return REBOOT_GUARD_UPTIME_TOO_LOW;
+        }
+    }
+
+    /* 2. Cooldown: reject if last reboot was < 300s ago */
+    time_t last_t = parse_iso8601_utc(last_reboot_time_str);
+    if (last_t > 0) {
+        time_t now = time(NULL);
+        long since = (long)(now - last_t);
+        if (since >= 0 && since < REBOOT_COOLDOWN_S) {
+            LOG_WARN("Reboot rejected: cooldown active (%lds remaining)",
+                     (long)(REBOOT_COOLDOWN_S - since));
+            return REBOOT_GUARD_COOLDOWN;
+        }
+    }
+
+    /* 3. Rate limit: > 3 HGWDoctor reboots in the last hour → SafeMode */
+    pthread_mutex_lock(&s_reboot_ring_mutex);
+    time_t now2 = time(NULL);
+    int recent = 0;
+    for (int i = 0; i < s_reboot_ring_count; i++) {
+        if ((now2 - s_reboot_ring[i]) < REBOOT_HOUR_WINDOW_S)
+            recent++;
+    }
+    pthread_mutex_unlock(&s_reboot_ring_mutex);
+
+    if (recent > REBOOT_MAX_PER_HOUR) {
+        LOG_WARN("Reboot rejected: %d reboots in last hour (> %d) — SafeMode",
+                 recent, REBOOT_MAX_PER_HOUR);
+        return REBOOT_GUARD_SAFE_MODE;
+    }
+
+    return REBOOT_GUARD_OK;
+}
+
+void recovery_record_reboot_completed(time_t when) {
+    pthread_mutex_lock(&s_reboot_ring_mutex);
+    if (s_reboot_ring_count < REBOOT_RING_SIZE) {
+        s_reboot_ring[s_reboot_ring_count++] = when;
+    } else {
+        memmove(s_reboot_ring, s_reboot_ring + 1,
+                (REBOOT_RING_SIZE - 1) * sizeof(time_t));
+        s_reboot_ring[REBOOT_RING_SIZE - 1] = when;
+    }
+    pthread_mutex_unlock(&s_reboot_ring_mutex);
+}
+
+int recovery_do_reboot(const char *scripts_dir) {
+    return do_reboot(scripts_dir);
+}
+
+/* -------------------------------------------------------------------------
+ * On-demand dispatch — explicit action, bypasses stored config
+ * ------------------------------------------------------------------------- */
+int recovery_dispatch_ondemand(ActionType action,
+                                const char *proc_name,
+                                const char *scripts_dir) {
+    int prev = atomic_fetch_add(&s_active_threads, 1);
+    if (prev >= RECOVERY_MAX_CONCURRENT) {
+        atomic_fetch_sub(&s_active_threads, 1);
+        LOG_WARN("Recovery: max concurrent actions reached, dropping on-demand dispatch");
+        return -1;
+    }
+
+    RecoveryTask *task = calloc(1, sizeof(*task));
+    if (!task) {
+        atomic_fetch_sub(&s_active_threads, 1);
+        return -1;
+    }
+
+    task->event.type = ANOMALY_ON_DEMAND;
+    clock_gettime(CLOCK_REALTIME, &task->event.detected_at);
+    if (proc_name && proc_name[0] != '\0') {
+        strncpy(task->event.process_name, proc_name, HGW_MAX_PROC_NAME - 1);
+        task->cfg.process_count = 1;
+        strncpy(task->cfg.process_names[0], proc_name, HGW_MAX_PROC_NAME - 1);
+    } else {
+        pthread_mutex_lock(&s_cfg_mutex);
+        task->cfg.process_count = s_cfg.process_count;
+        memcpy(task->cfg.process_names, s_cfg.process_names,
+               sizeof(s_cfg.process_names));
+        pthread_mutex_unlock(&s_cfg_mutex);
+    }
+
+    task->cfg.action_type = action;
+    if (scripts_dir && scripts_dir[0] != '\0')
+        strncpy(task->cfg.scripts_dir, scripts_dir, HGW_MAX_PATH - 1);
+
+    pthread_mutex_lock(&s_cfg_mutex);
+    task->callback = s_callback;
+    task->userdata  = s_userdata;
+    pthread_mutex_unlock(&s_cfg_mutex);
+
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&t, &attr, recovery_run, task);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        free(task);
+        atomic_fetch_sub(&s_active_threads, 1);
+        return -1;
+    }
+    return 0;
 }
 
 int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdata) {

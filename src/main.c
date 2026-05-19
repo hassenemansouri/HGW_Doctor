@@ -48,6 +48,8 @@ static volatile sig_atomic_t g_diag_req          = 0;  /* set by SIGUSR1 — man
 static _Atomic int           g_anomaly_diag      = ATOMIC_VAR_INIT(0); /* set by on_anomaly */
 static _Atomic int           g_monitoring_enabled = ATOMIC_VAR_INIT(1);
 static _Atomic int           g_dm_changed        = ATOMIC_VAR_INIT(0); /* set by DM signal */
+static _Atomic int           g_reboot_pending    = ATOMIC_VAR_INIT(0); /* deferred reboot armed */
+static int                   s_reboot_ticks      = 0;  /* 100ms ticks until reboot; main loop only */
 
 /* Per-AnomalyType last recovery dispatch time — cooldown enforcement.
  * Accessed only from on_anomaly(), which is called serially by the analyzer thread. */
@@ -181,40 +183,123 @@ static bool dmconfig_changed(const DmConfig *a, const DmConfig *b) {
            strncmp(a->diag_output_dir,  b->diag_output_dir,  sizeof(a->diag_output_dir))  != 0;
 }
 
+/* -------------------------------------------------------------------------
+ * On-demand action dispatch — called when ActionType is written to a
+ * non-None value.  ActionType is reset to "None" immediately after so that
+ * the next poll does not re-trigger.  For Reboot, arms a deferred countdown;
+ * for ProcessRestart / CacheClear, dispatches an async recovery task.
+ * ------------------------------------------------------------------------- */
+static void execute_on_demand_action(const char *action_str, const DmConfig *dmc) {
+    ActionType action = action_str_to_type(action_str);
+    if (action == ACTION_NONE) return;
+
+    LOG_INFO("On-demand action requested: %s", action_str);
+
+    if (action == ACTION_REBOOT) {
+        /* Safety guards */
+        char last_rt[32] = {0};
+        datamodel_get_last_reboot_time(last_rt, sizeof(last_rt));
+        RebootGuardResult guard = recovery_reboot_guard_check(last_rt);
+
+        if (guard == REBOOT_GUARD_SAFE_MODE) {
+            LOG_WARN("On-demand reboot denied: rate limit exceeded — entering SafeMode");
+            datamodel_append_ondemand_log("Reboot", "Rejected");
+            datamodel_set_status(STATUS_SAFE_MODE);
+            return;
+        }
+        if (guard == REBOOT_GUARD_UPTIME_TOO_LOW || guard == REBOOT_GUARD_COOLDOWN) {
+            /* reason already logged by recovery_reboot_guard_check() */
+            datamodel_append_ondemand_log("Reboot", "Rejected");
+            return;
+        }
+
+        /* Guard OK — arm deferred reboot */
+        uint32_t delay_s = datamodel_get_reboot_delay_sec();
+        if (delay_s == 0) delay_s = 10;
+        datamodel_append_ondemand_log("Reboot", "Pending");
+        datamodel_set_status(STATUS_REBOOT_PENDING);
+        diag_collect(NULL);
+        s_reboot_ticks = (int)(delay_s * 10);  /* 100ms ticks */
+        atomic_store_explicit(&g_reboot_pending, 1, memory_order_release);
+        LOG_INFO("Deferred reboot armed: %us countdown (%d ticks)", delay_s, s_reboot_ticks);
+
+    } else {
+        /* ProcessRestart or CacheClear — dispatch asynchronously */
+        char first_proc[HGW_MAX_PROC_NAME] = {0};
+        if (action == ACTION_PROCESS_RESTART && dmc->process_list[0] != '\0') {
+            const char *comma = strchr(dmc->process_list, ',');
+            size_t len = comma ? (size_t)(comma - dmc->process_list)
+                               : strlen(dmc->process_list);
+            if (len >= HGW_MAX_PROC_NAME) len = HGW_MAX_PROC_NAME - 1;
+            while (len > 0 && dmc->process_list[len - 1] == ' ') len--;
+            memcpy(first_proc, dmc->process_list, len);
+        }
+
+        /* Stamp s_last_event as OnDemand so on_recovery_done() logs correctly */
+        AnomalyEvent on_demand_ev = {0};
+        on_demand_ev.type = ANOMALY_ON_DEMAND;
+        clock_gettime(CLOCK_REALTIME, &on_demand_ev.detected_at);
+        if (first_proc[0])
+            strncpy(on_demand_ev.process_name, first_proc, HGW_MAX_PROC_NAME - 1);
+        pthread_mutex_lock(&s_event_mutex);
+        s_last_event = on_demand_ev;
+        pthread_mutex_unlock(&s_event_mutex);
+
+        recovery_dispatch_ondemand(action,
+                                   first_proc[0] ? first_proc : NULL,
+                                   s_scripts_dir);
+    }
+}
+
 static void apply_dm_config(const DmConfig *dmc) {
+    /* Work on a copy so we can override action_type after on-demand dispatch */
+    DmConfig effective = *dmc;
+
+    /* Detect on-demand action: ActionType just changed to a non-None value.
+     * Guard g_reboot_pending prevents re-arming during an active countdown. */
+    ActionType new_act  = action_str_to_type(effective.action_type);
+    ActionType prev_act = action_str_to_type(s_last_applied_dmc.action_type);
+    if (new_act != ACTION_NONE && new_act != prev_act &&
+        !atomic_load_explicit(&g_reboot_pending, memory_order_relaxed)) {
+        execute_on_demand_action(effective.action_type, &effective);
+        /* Reset ActionType=None in the DM and in our working copy */
+        datamodel_set_action_type("None");
+        strncpy(effective.action_type, "None", sizeof(effective.action_type) - 1);
+    }
+
     char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
     int  proc_count = 0;
-    parse_process_list(dmc->process_list, proc_names, &proc_count);
+    parse_process_list(effective.process_list, proc_names, &proc_count);
     if (proc_count == 0) {
         memcpy(proc_names, s_fallback_proc_names, sizeof(proc_names));
         proc_count = s_fallback_proc_count;
     }
 
     AnalyzerConfig acfg2 = {0};
-    acfg2.cpu_threshold_pct    = dmc->cpu_threshold_pct;
-    acfg2.mem_threshold_pct    = dmc->mem_threshold_pct;
-    acfg2.threshold_duration_s = dmc->threshold_duration_s;
-    acfg2.poll_interval_s      = dmc->poll_interval_s;
+    acfg2.cpu_threshold_pct    = effective.cpu_threshold_pct;
+    acfg2.mem_threshold_pct    = effective.mem_threshold_pct;
+    acfg2.threshold_duration_s = effective.threshold_duration_s;
+    acfg2.poll_interval_s      = effective.poll_interval_s;
     acfg2.process_count        = proc_count;
     memcpy(acfg2.process_names, proc_names, sizeof(acfg2.process_names));
     analyzer_update_config(&acfg2);
     monitor_update_config(
         (const char (*)[HGW_MAX_PROC_NAME]) proc_names,
-        proc_count, dmc->poll_interval_s);
+        proc_count, effective.poll_interval_s);
 
     RecoveryConfig rcfg2 = {0};
-    rcfg2.action_type   = action_str_to_type(dmc->action_type);
+    rcfg2.action_type   = action_str_to_type(effective.action_type);
     rcfg2.process_count = proc_count;
     memcpy(rcfg2.process_names, proc_names, sizeof(rcfg2.process_names));
     strncpy(rcfg2.scripts_dir, s_scripts_dir, HGW_MAX_PATH - 1);
     recovery_update_config(&rcfg2);
 
-    if (dmc->upload_url[0] != '\0')
-        uploader_update_url(dmc->upload_url);
-    if (dmc->diag_output_dir[0] != '\0')
-        diag_collector_update_output_dir(dmc->diag_output_dir);
+    if (effective.upload_url[0] != '\0')
+        uploader_update_url(effective.upload_url);
+    if (effective.diag_output_dir[0] != '\0')
+        diag_collector_update_output_dir(effective.diag_output_dir);
 
-    if (!dmc->enable && atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
+    if (!effective.enable && atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
         atomic_store_explicit(&g_monitoring_enabled, 0, memory_order_relaxed);
 
         /* Full shutdown: stop threads, clear cache, reset logs */
@@ -229,7 +314,7 @@ static void apply_dm_config(const DmConfig *dmc) {
 
         datamodel_set_status(STATUS_DISABLED);
         LOG_INFO("Monitoring fully stopped and cache cleared");
-    } else if (dmc->enable && !atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
+    } else if (effective.enable && !atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
         atomic_store_explicit(&g_monitoring_enabled, 1, memory_order_relaxed);
 
         monitor_start();
@@ -241,11 +326,11 @@ static void apply_dm_config(const DmConfig *dmc) {
 
     LOG_INFO("Live config updated from DM: "
              "cpu=%u mem=%u dur=%u poll=%u action=%s procs=%d enable=%d",
-             dmc->cpu_threshold_pct, dmc->mem_threshold_pct,
-             dmc->threshold_duration_s, dmc->poll_interval_s,
-             dmc->action_type, proc_count, dmc->enable);
+             effective.cpu_threshold_pct, effective.mem_threshold_pct,
+             effective.threshold_duration_s, effective.poll_interval_s,
+             effective.action_type, proc_count, effective.enable);
 
-    s_last_applied_dmc = *dmc;
+    s_last_applied_dmc = effective;
 }
 
 /* -------------------------------------------------------------------------
@@ -568,6 +653,14 @@ int main(int argc, char *argv[]) {
     strncpy(rcfg.scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
     recovery_init(&rcfg, on_recovery_done, NULL);
 
+    /* If we booted after a HGWDoctor-triggered reboot, record it in the
+     * reboot ring so the guard's rate-limit counts it correctly. */
+    if (datamodel_was_deferred_reboot_boot()) {
+        struct timespec bts = {0};
+        clock_gettime(CLOCK_BOOTTIME, &bts);
+        recovery_record_reboot_completed(time(NULL) - bts.tv_sec);
+    }
+
     DiagConfig dcfg = {0};
     dcfg.max_archives = cfg.diag_max_archives;
     strncpy(dcfg.output_dir, cfg.diag_output_dir, HGW_MAX_PATH - 1);
@@ -769,6 +862,27 @@ int main(int argc, char *argv[]) {
             datamodel_update_uptime((uint32_t)(time(NULL) - start_time));
             datamodel_update_self_stats();
             datamodel_sync_counters();
+        }
+
+        /* Deferred reboot countdown — tick every 100ms iteration */
+        if (atomic_load_explicit(&g_reboot_pending, memory_order_acquire)
+            && s_reboot_ticks > 0) {
+            s_reboot_ticks--;
+            if (s_reboot_ticks == 0) {
+                LOG_INFO("Reboot countdown complete — executing reboot");
+                /* Write flag file on persistent storage so next boot knows
+                 * this was a HGWDoctor-triggered reboot. */
+                FILE *rf = fopen(HGW_REBOOT_PENDING_FILE, "w");
+                if (rf) fclose(rf);
+                watchdog_close();
+                recovery_do_reboot(s_scripts_dir);
+                /* Should not reach here; clear pending state if reboot fails */
+                LOG_WARN("Reboot command returned unexpectedly — clearing pending state");
+                unlink(HGW_REBOOT_PENDING_FILE);
+                atomic_store_explicit(&g_reboot_pending, 0, memory_order_relaxed);
+                datamodel_append_ondemand_log("Reboot", "Failure");
+                datamodel_set_status(STATUS_ENABLED);
+            }
         }
 
         /* Pet the hardware watchdog at a fixed interval independent of poll_interval_s */

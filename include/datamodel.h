@@ -51,6 +51,14 @@ void datamodel_sync_startup(const char *action_type, const char *upload_url,
                              const char *diag_output_dir);
 void datamodel_sync_counters(void);
 
+/* On-demand reboot helpers */
+void     datamodel_set_action_type(const char *action_type);
+uint32_t datamodel_get_reboot_delay_sec(void);
+void     datamodel_get_last_reboot_time(char *buf, size_t len);
+void     datamodel_append_ondemand_log(const char *action_taken,
+                                       const char *action_result);
+bool     datamodel_was_deferred_reboot_boot(void);
+
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);
 amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,

@@ -38,9 +38,14 @@ import "hgw_doctor.so" as "hgw_doctor";
         %persistent uint32 PollInterval = 5;         /* seconds between metric samples */
 
         /* Recovery */
-        /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None" */
-        %persistent string ActionType = "ProcessRestart";
+        /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None"
+         * Writing a non-None value triggers an immediate on-demand action
+         * and resets ActionType back to "None" automatically. */
+        %persistent string ActionType = "None";
         %persistent string ProcessList = "";
+        %persistent uint32 RebootDelaySec = 10;
+        %persistent %read-only uint32 RebootCount = 0;
+        %persistent %read-only string LastRebootTime = "";
 
         /* Recovery status (RO, updated after each action) */
         %read-only string LastActionType = "";

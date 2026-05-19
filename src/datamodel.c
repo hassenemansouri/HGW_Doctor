@@ -15,6 +15,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <syslog.h>
+#include <unistd.h>
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
@@ -40,6 +41,7 @@ static amxd_dm_t         *s_dm = NULL;
 static _Atomic uint32_t   s_anomaly_count = 0;
 static _Atomic uint32_t   s_total_actions = 0;
 static _Atomic uint32_t   s_total_uploads = 0;
+static bool               s_booted_after_reboot = false;
 
 static int dm_split_path(const char *param_path, char *object_path,
                          size_t object_path_len, char *param_name,
@@ -89,6 +91,7 @@ static const char *anomaly_type_to_string(AnomalyType type) {
         case ANOMALY_PROCESS:     return "Process";
         case ANOMALY_PROCESS_CPU: return "ProcessCPU";
         case ANOMALY_PROCESS_MEM: return "ProcessMem";
+        case ANOMALY_ON_DEMAND:   return "OnDemand";
         case ANOMALY_NONE:
         default:                  return "";
     }
@@ -204,8 +207,71 @@ static void dm_set_datetime_now(const char *param_path) {
 /* -------------------------------------------------------------------------
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
-/* -------------------------------------------------------------------------
- * ------------------------------------------------------------------------- */
+
+/* Called from datamodel_init() after persistent values are restored.
+ * If the flag file written before the last HGWDoctor-triggered reboot exists,
+ * finalize the reboot record: increment RebootCount, set LastRebootTime,
+ * and add a Success entry to AnomalyLog. */
+static void datamodel_finalize_reboot_on_boot(void) {
+    FILE *f = fopen(HGW_REBOOT_PENDING_FILE, "r");
+    if (!f) return;
+    fclose(f);
+    unlink(HGW_REBOOT_PENDING_FILE);
+
+    uint32_t count = dm_read_uint32(TR181_REBOOT_COUNT);
+    dm_set_uint32(TR181_REBOOT_COUNT, count + 1);
+
+    struct timespec boot_ts = {0};
+    clock_gettime(CLOCK_BOOTTIME, &boot_ts);
+    time_t boot_wall = time(NULL) - boot_ts.tv_sec;
+    char ts_buf[32];
+    dm_format_utc(boot_wall, ts_buf, sizeof(ts_buf));
+    dm_set_string(TR181_LAST_REBOOT_TIME, ts_buf);
+
+    /* Add a Success log entry (the Pending entry did not survive the reboot) */
+    amxd_object_t *log_obj = amxd_dm_findf(s_dm, "%s", TR181_ANOMALY_LOG);
+    if (log_obj) {
+        uint32_t log_count = 0;
+        uint32_t oldest_idx = 0;
+        bool have_oldest = false;
+        amxd_object_for_each(instance, it, log_obj) {
+            amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+            if (!have_oldest) {
+                oldest_idx = amxd_object_get_index(inst);
+                have_oldest = true;
+            }
+            log_count++;
+        }
+        if (log_count >= HGW_ANOMALY_LOG_MAX && have_oldest) {
+            amxd_trans_t del;
+            amxd_trans_init(&del);
+            amxd_trans_set_attr(&del, amxd_tattr_change_ro, true);
+            amxd_trans_select_object(&del, log_obj);
+            amxd_trans_del_inst(&del, oldest_idx, NULL);
+            amxd_trans_apply(&del, s_dm);
+            amxd_trans_clean(&del);
+        }
+    }
+
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_pathf(&trans, "%s", TR181_ANOMALY_LOG);
+    amxd_trans_add_inst(&trans, 0, NULL);
+    amxd_trans_set_value(cstring_t, &trans, "Timestamp",   ts_buf);
+    amxd_trans_set_value(cstring_t, &trans, "AnomalyType", "OnDemand");
+    amxd_trans_set_value(uint32_t,  &trans, "MetricValue", 0);
+    amxd_trans_set_value(cstring_t, &trans, "ProcessName", "");
+    amxd_trans_set_value(cstring_t, &trans, "ActionTaken", "Reboot");
+    amxd_trans_set_value(cstring_t, &trans, "ActionResult", "Success");
+    amxd_trans_apply(&trans, s_dm);
+    amxd_trans_clean(&trans);
+
+    s_booted_after_reboot = true;
+    syslog(LOG_INFO, "Boot after HGWDoctor reboot: RebootCount=%u LastRebootTime=%s",
+           count + 1, ts_buf);
+}
+
 void datamodel_start_sync(void) {
     /* amxs sync removed — Device.X_TELNET_HGWDoctor is proxied by
      * the platform tr181-device mapping, not by amxs. */
@@ -232,6 +298,9 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     atomic_store(&s_anomaly_count, dm_read_uint32(TR181_ANOMALY_COUNT));
     atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
     atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
+
+    /* Finalize any pending HGWDoctor-triggered reboot from the previous run */
+    datamodel_finalize_reboot_on_boot();
 
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
@@ -702,6 +771,86 @@ bool datamodel_get_config(DmConfig *out) {
 #undef DM_READ_STR
     amxc_var_clean(&val);
     return true;
+}
+
+/* -------------------------------------------------------------------------
+ * On-demand reboot helpers
+ * ------------------------------------------------------------------------- */
+void datamodel_set_action_type(const char *action_type) {
+    dm_set_string(TR181_ACTION_TYPE, action_type ? action_type : "None");
+}
+
+uint32_t datamodel_get_reboot_delay_sec(void) {
+    return dm_read_uint32(TR181_REBOOT_DELAY_SEC);
+}
+
+void datamodel_get_last_reboot_time(char *buf, size_t len) {
+    if (!buf || len == 0) return;
+    buf[0] = '\0';
+    if (!s_dm) return;
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "HGWDoctor.");
+    if (!obj) return;
+    amxc_var_t val;
+    amxc_var_init(&val);
+    if (amxd_object_get_param(obj, "LastRebootTime", &val) == amxd_status_ok) {
+        const char *s = amxc_var_constcast(cstring_t, &val);
+        if (s) strncpy(buf, s, len - 1);
+    }
+    amxc_var_clean(&val);
+}
+
+void datamodel_append_ondemand_log(const char *action_taken,
+                                   const char *action_result) {
+    char timestamp[32];
+    if (!s_dm) return;
+
+    time_t now = time(NULL);
+    dm_format_utc(now, timestamp, sizeof(timestamp));
+
+    /* Enforce cap */
+    amxd_object_t *log_obj = amxd_dm_findf(s_dm, "%s", TR181_ANOMALY_LOG);
+    if (log_obj) {
+        uint32_t count = 0;
+        uint32_t oldest_idx = 0;
+        bool have_oldest = false;
+        amxd_object_for_each(instance, it, log_obj) {
+            amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+            if (!have_oldest) {
+                oldest_idx = amxd_object_get_index(inst);
+                have_oldest = true;
+            }
+            count++;
+        }
+        if (count >= HGW_ANOMALY_LOG_MAX && have_oldest) {
+            amxd_trans_t del;
+            amxd_trans_init(&del);
+            amxd_trans_set_attr(&del, amxd_tattr_change_ro, true);
+            amxd_trans_select_object(&del, log_obj);
+            amxd_trans_del_inst(&del, oldest_idx, NULL);
+            amxd_trans_apply(&del, s_dm);
+            amxd_trans_clean(&del);
+        }
+    }
+
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_pathf(&trans, "%s", TR181_ANOMALY_LOG);
+    amxd_trans_add_inst(&trans, 0, NULL);
+    amxd_trans_set_value(cstring_t, &trans, "Timestamp",   timestamp);
+    amxd_trans_set_value(cstring_t, &trans, "AnomalyType", "OnDemand");
+    amxd_trans_set_value(uint32_t,  &trans, "MetricValue", 0);
+    amxd_trans_set_value(cstring_t, &trans, "ProcessName", "");
+    amxd_trans_set_value(cstring_t, &trans, "ActionTaken",
+                         action_taken  ? action_taken  : "");
+    amxd_trans_set_value(cstring_t, &trans, "ActionResult",
+                         action_result ? action_result : "None");
+    dm_apply_trans(&trans, TR181_ANOMALY_LOG);
+    amxd_trans_clean(&trans);
+}
+
+bool datamodel_was_deferred_reboot_boot(void) {
+    return s_booted_after_reboot;
 }
 
 /* -------------------------------------------------------------------------

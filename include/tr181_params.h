@@ -26,6 +26,13 @@
 /* ── Recovery config ─────────────────────────────────────────────────────── */
 #define TR181_ACTION_TYPE         TR181_ROOT ".ActionType"
 #define TR181_PROCESS_LIST        TR181_ROOT ".ProcessList"
+#define TR181_REBOOT_DELAY_SEC    TR181_ROOT ".RebootDelaySec"
+#define TR181_REBOOT_COUNT        TR181_ROOT ".RebootCount"
+#define TR181_LAST_REBOOT_TIME    TR181_ROOT ".LastRebootTime"
+
+/* Path of flag file written just before a HGWDoctor-initiated reboot.
+ * Survives the reboot on persistent storage; deleted on next boot. */
+#define HGW_REBOOT_PENDING_FILE   "/etc/amx/hgw_doctor/reboot_pending"
 
 /* ── Recovery status (RO) ────────────────────────────────────────────────── */
 #define TR181_LAST_ACTION_TYPE    TR181_ROOT ".LastActionType"
@@ -70,6 +77,8 @@
 #define STATUS_ENABLED            "Enabled"
 #define STATUS_DISABLED           "Disabled"
 #define STATUS_ERROR              "Error"
+#define STATUS_REBOOT_PENDING     "RebootPending"
+#define STATUS_SAFE_MODE          "SafeMode"
 
 /* ── String values for UploadStatus / LastActionStatus ──────────────────── */
 #define RESULT_STR_NONE           "None"

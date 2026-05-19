@@ -1,6 +1,7 @@
 #ifndef HGW_RECOVERY_H
 #define HGW_RECOVERY_H
 
+#include <time.h>
 #include "types.h"
 
 typedef struct {
@@ -12,9 +13,26 @@ typedef struct {
 
 typedef void (*recovery_callback)(const RecoveryResult *result, void *userdata);
 
-int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdata);
-int recovery_dispatch(const AnomalyEvent *event);
+int  recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdata);
+int  recovery_dispatch(const AnomalyEvent *event);
 void recovery_update_config(const RecoveryConfig *cfg);
 void recovery_cleanup(void);
+
+/* On-demand dispatch: explicit action + process name, bypasses stored config */
+int  recovery_dispatch_ondemand(ActionType action,
+                                 const char *proc_name,
+                                 const char *scripts_dir);
+
+/* Deferred reboot helpers */
+typedef enum {
+    REBOOT_GUARD_OK             = 0,
+    REBOOT_GUARD_UPTIME_TOO_LOW = 1,
+    REBOOT_GUARD_COOLDOWN       = 2,
+    REBOOT_GUARD_SAFE_MODE      = 3,
+} RebootGuardResult;
+
+RebootGuardResult recovery_reboot_guard_check(const char *last_reboot_time_str);
+void recovery_record_reboot_completed(time_t when);
+int  recovery_do_reboot(const char *scripts_dir);
 
 #endif /* HGW_RECOVERY_H */

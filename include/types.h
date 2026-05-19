@@ -63,6 +63,7 @@ typedef enum {
     ANOMALY_PROCESS     = 3,
     ANOMALY_PROCESS_CPU = 4,
     ANOMALY_PROCESS_MEM = 5,
+    ANOMALY_ON_DEMAND   = 6,  /* operator-triggered on-demand action */
 } AnomalyType;
 
 /* -------------------------------------------------------------------------
