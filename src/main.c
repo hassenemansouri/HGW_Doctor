@@ -192,6 +192,9 @@ static bool dmconfig_changed(const DmConfig *a, const DmConfig *b) {
            strncmp(a->diag_output_dir,  b->diag_output_dir,  sizeof(a->diag_output_dir))  != 0;
 }
 
+/* forward declaration — defined after on_recovery_done */
+static void on_ondemand_done(const RecoveryResult *result, void *userdata);
+
 /* -------------------------------------------------------------------------
  * On-demand action dispatch — called when ActionType is written to a
  * non-None value.  ActionType is reset to "None" immediately after so that
