@@ -122,6 +122,7 @@ static bool fetch_config_from_bus(DmConfig *out) {
     READ_STR("ProcessList",       process_list);
     READ_STR("UploadURL",         upload_url);
     READ_STR("DiagOutputDir",     diag_output_dir);
+    READ_STR("OnDemandTarget",    on_demand_target);
 
 #undef READ_U32
 #undef READ_STR

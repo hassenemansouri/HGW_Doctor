@@ -24,6 +24,7 @@ typedef struct {
     char     process_list[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME];
     char     upload_url[HGW_MAX_URL];
     char     diag_output_dir[HGW_MAX_PATH];
+    char     on_demand_target[HGW_MAX_PROC_NAME];
     bool     enable;
 } DmConfig;
 
