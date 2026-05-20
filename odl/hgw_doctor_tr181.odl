@@ -16,10 +16,10 @@
  * Included from: hgw_doctor.odl
  */
 
-%define {
+%define { /* expose necessary data */
 
     object Device {
-        object X_TELNET_HGWDoctor {
+        object X_TELNET_HGWDoctor { /* to be changed in prefix */
 
             /* ── Control (bidirectional) ───────────────────────────────── */
             bool Enable = true {
@@ -82,11 +82,7 @@
                 %read-only uint32 UptimeSeconds = 0;
             }
 
-            object SelfStats {
-                %read-only uint32 CurrentCPUUsage = 0;
-                %read-only uint32 CurrentMemUsage = 0;
-                %read-only uint32 CurrentRSSKB = 0;
-            }
+
 
             /* ── Monitoring profiles (bidirectional) ───────────────────── */
             object Profiles[] {

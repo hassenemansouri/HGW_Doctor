@@ -914,6 +914,7 @@ int main(int argc, char *argv[]) {
             pthread_mutex_unlock(&s_ondemand_mutex);
             for (int i = 0; i < snap_count; i++) {
                 datamodel_record_action(&snap_q[i].result);
+                datamodel_increment_anomaly_count();
                 datamodel_append_anomaly_log(
                     &snap_q[i].event,
                     action_type_to_string(snap_q[i].result.action),
