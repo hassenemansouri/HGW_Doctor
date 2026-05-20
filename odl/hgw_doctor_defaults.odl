@@ -21,7 +21,7 @@
         parameter MemThreshold    = 90;
         parameter ThresholdDuration = 60;
         parameter PollInterval    = 5;
-        parameter ActionType      = "ProcessRestart";
+        parameter ActionType      = "None";
         parameter ProcessList     = "cwmp_plugin,tr181-device,dhcpv4-manager,tr181-dns";
         parameter UploadURL       = "https://diagnostics.telnet.tn/upload";
 
