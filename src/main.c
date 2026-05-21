@@ -878,75 +878,6 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* Flush any pending ubus events before touching the DM.
-         * amxd_trans_apply() notifies ubus subscribers synchronously; if an
-         * unread client _get/_set is sitting in the socket buffer the write
-         * can block until that request is consumed — deadlocking the loop.
-         * A non-blocking poll+read here drains the socket first. */
-        if (g_bus_ctx != NULL) {
-            int pre_fd = amxb_get_fd(g_bus_ctx);
-            if (pre_fd >= 0) {
-                struct pollfd pre_pfd = { .fd = pre_fd, .events = POLLIN };
-                if (poll(&pre_pfd, 1, 0) > 0 && (pre_pfd.revents & POLLIN))
-                    amxb_read(g_bus_ctx);
-            }
-        }
-        amxp_signal_read();
-
-        /* Drain pending DM updates from background threads — runs every 100ms */
-        {
-            PendingDmUpdate snap = {0};
-            pthread_mutex_lock(&s_pending_mutex);
-            if (s_pending.recovery_valid || s_pending.upload_valid) {
-                snap = s_pending;
-                s_pending.recovery_valid = 0;
-                s_pending.upload_valid   = 0;
-            }
-            pthread_mutex_unlock(&s_pending_mutex);
-
-            if (snap.recovery_valid) {
-                datamodel_record_action(&snap.recovery_result);
-                datamodel_append_anomaly_log(
-                    &snap.recovery_event,
-                    action_type_to_string(snap.recovery_result.action),
-                    snap.recovery_result.result == RESULT_SUCCESS ? "Success" : "Failure"
-                );
-            }
-            if (snap.upload_valid)
-                datamodel_record_upload(snap.upload_status, snap.upload_path);
-        }
-
-        /* Drain on-demand recovery results (ProcessRestart / CacheClear) */
-        {
-            OnDemandResult snap_q[ONDEMAND_QUEUE_SIZE];
-            int snap_count = 0;
-            pthread_mutex_lock(&s_ondemand_mutex);
-            if (s_ondemand_count > 0) {
-                snap_count = s_ondemand_count;
-                memcpy(snap_q, s_ondemand_queue, snap_count * sizeof(OnDemandResult));
-                s_ondemand_count = 0;
-            }
-            pthread_mutex_unlock(&s_ondemand_mutex);
-            for (int i = 0; i < snap_count; i++) {
-                datamodel_record_action(&snap_q[i].result);
-                datamodel_increment_anomaly_count();
-                datamodel_append_anomaly_log(
-                    &snap_q[i].event,
-                    action_type_to_string(snap_q[i].result.action),
-                    snap_q[i].result.result == RESULT_SUCCESS ? "Success" : "Failure"
-                );
-                /* Collect diagnostics from the main thread — never from the
-                 * recovery thread.  Reuse the same cooldown as the anomaly path. */
-                time_t now_od = time(NULL);
-                if (now_od - last_diag_collect >= DIAG_COOLDOWN_S) {
-                    last_diag_collect = now_od;
-                    LOG_INFO("Collecting diagnostics after on-demand %s",
-                             action_type_to_string(snap_q[i].result.action));
-                    diag_collect(&snap_q[i].event);
-                }
-            }
-        }
-
         /* Update data model stats at poll_interval_s cadence, not every 100ms */
         time_t now = time(NULL);
         if (now - last_stats_update >= (time_t)cfg.poll_interval_s) {
@@ -1006,6 +937,65 @@ int main(int argc, char *argv[]) {
         if (!did_sleep)
             usleep(100000);
         amxp_signal_read();
+
+        /* Drain pending DM updates from background threads.
+         * Placed here — after amxb_read() — so the ubus socket is freshly
+         * empty when amxd_trans_apply() fires change notifications internally.
+         * Writing to a clean socket never blocks; writing before amxb_read()
+         * risks a deadlock if a client _get/_set is queued behind our write. */
+        {
+            PendingDmUpdate snap = {0};
+            pthread_mutex_lock(&s_pending_mutex);
+            if (s_pending.recovery_valid || s_pending.upload_valid) {
+                snap = s_pending;
+                s_pending.recovery_valid = 0;
+                s_pending.upload_valid   = 0;
+            }
+            pthread_mutex_unlock(&s_pending_mutex);
+
+            if (snap.recovery_valid) {
+                datamodel_record_action(&snap.recovery_result);
+                datamodel_append_anomaly_log(
+                    &snap.recovery_event,
+                    action_type_to_string(snap.recovery_result.action),
+                    snap.recovery_result.result == RESULT_SUCCESS ? "Success" : "Failure"
+                );
+            }
+            if (snap.upload_valid)
+                datamodel_record_upload(snap.upload_status, snap.upload_path);
+        }
+
+        /* Drain on-demand recovery results (ProcessRestart / CacheClear).
+         * Same reasoning: DM writes happen after amxb_read() on the main
+         * thread; diag_collect() is also dispatched here, never from the
+         * recovery thread. */
+        {
+            OnDemandResult snap_q[ONDEMAND_QUEUE_SIZE];
+            int snap_count = 0;
+            pthread_mutex_lock(&s_ondemand_mutex);
+            if (s_ondemand_count > 0) {
+                snap_count = s_ondemand_count;
+                memcpy(snap_q, s_ondemand_queue, snap_count * sizeof(OnDemandResult));
+                s_ondemand_count = 0;
+            }
+            pthread_mutex_unlock(&s_ondemand_mutex);
+            for (int i = 0; i < snap_count; i++) {
+                datamodel_record_action(&snap_q[i].result);
+                datamodel_increment_anomaly_count();
+                datamodel_append_anomaly_log(
+                    &snap_q[i].event,
+                    action_type_to_string(snap_q[i].result.action),
+                    snap_q[i].result.result == RESULT_SUCCESS ? "Success" : "Failure"
+                );
+                time_t now_od = time(NULL);
+                if (now_od - last_diag_collect >= DIAG_COOLDOWN_S) {
+                    last_diag_collect = now_od;
+                    LOG_INFO("Collecting diagnostics after on-demand %s",
+                             action_type_to_string(snap_q[i].result.action));
+                    diag_collect(&snap_q[i].event);
+                }
+            }
+        }
     }
 
     /* 8. Graceful shutdown */
