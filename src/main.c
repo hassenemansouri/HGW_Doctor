@@ -878,6 +878,21 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        /* Flush any pending ubus events before touching the DM.
+         * amxd_trans_apply() notifies ubus subscribers synchronously; if an
+         * unread client _get/_set is sitting in the socket buffer the write
+         * can block until that request is consumed — deadlocking the loop.
+         * A non-blocking poll+read here drains the socket first. */
+        if (g_bus_ctx != NULL) {
+            int pre_fd = amxb_get_fd(g_bus_ctx);
+            if (pre_fd >= 0) {
+                struct pollfd pre_pfd = { .fd = pre_fd, .events = POLLIN };
+                if (poll(&pre_pfd, 1, 0) > 0 && (pre_pfd.revents & POLLIN))
+                    amxb_read(g_bus_ctx);
+            }
+        }
+        amxp_signal_read();
+
         /* Drain pending DM updates from background threads — runs every 100ms */
         {
             PendingDmUpdate snap = {0};
@@ -920,6 +935,15 @@ int main(int argc, char *argv[]) {
                     action_type_to_string(snap_q[i].result.action),
                     snap_q[i].result.result == RESULT_SUCCESS ? "Success" : "Failure"
                 );
+                /* Collect diagnostics from the main thread — never from the
+                 * recovery thread.  Reuse the same cooldown as the anomaly path. */
+                time_t now_od = time(NULL);
+                if (now_od - last_diag_collect >= DIAG_COOLDOWN_S) {
+                    last_diag_collect = now_od;
+                    LOG_INFO("Collecting diagnostics after on-demand %s",
+                             action_type_to_string(snap_q[i].result.action));
+                    diag_collect(&snap_q[i].event);
+                }
             }
         }
 
