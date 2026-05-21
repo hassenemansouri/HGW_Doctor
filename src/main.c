@@ -563,13 +563,14 @@ static void on_device_object_changed(const char *sig_name,
 }
 
 /* Called from main loop after amxb_read() — socket is clean, safe to issue
- * synchronous amxb_get / amxb_set on g_bus_ctx. */
+ * a synchronous amxb_get on g_bus_ctx.  Write uses amxd_trans_apply() directly
+ * on g_dm to avoid the amxb_set() round-trip through ubusd: that round-trip
+ * calls amxb_read() re-entrantly and blocks for up to 1 s, which starves the
+ * main event loop and causes ubus _set callers to time out. */
 static void sync_device_to_local_dm(void) {
     amxc_var_t result;
-    amxc_var_t result2;
     amxc_var_t params;
     amxc_var_init(&result);
-    amxc_var_init(&result2);
     amxc_var_init(&params);
 
     if (amxb_get(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", 0, &result, 1) != 0) {
@@ -595,14 +596,27 @@ static void sync_device_to_local_dm(void) {
             amxc_var_set_key(&params, s_mirror_params[i], v, AMXC_VAR_FLAG_COPY);
     }
 
-    if (amxb_set(g_bus_ctx, "HGWDoctor.", &params, &result2, 1) != 0)
-        LOG_WARN("sync_device_to_local_dm: amxb_set to HGWDoctor failed");
+    {
+        amxd_object_t *hgw = amxd_dm_findf(&g_dm, "HGWDoctor.");
+        if (hgw) {
+            amxd_trans_t t;
+            amxd_trans_init(&t);
+            amxd_trans_select_object(&t, hgw);
+            for (int i = 0; s_mirror_params[i]; i++) {
+                amxc_var_t *v = amxc_var_get_key(&params, s_mirror_params[i],
+                                                  AMXC_VAR_FLAG_DEFAULT);
+                if (v) amxd_trans_set_param(&t, s_mirror_params[i], v);
+            }
+            if (amxd_trans_apply(&t, &g_dm) != amxd_status_ok)
+                LOG_WARN("sync_device_to_local_dm: amxd_trans_apply failed");
+            amxd_trans_clean(&t);
+        }
+    }
 
     atomic_store_explicit(&g_dm_changed, 1, memory_order_release);
 
 done:
     amxc_var_clean(&params);
-    amxc_var_clean(&result2);
     amxc_var_clean(&result);
 }
 
@@ -817,57 +831,6 @@ int main(int argc, char *argv[]) {
             LOG_INFO("On-demand diagnostics triggered via TR-181 OnDemandTrigger write");
             diag_collect(NULL);
         }
-        /* Propagate DM writes to running modules.
-         * Path 1: trigger file (startup/restore via dm_on_param_changed).
-         * Path 2: dm:object-changed Ambiorix signal (reactive, catches ubus _set).
-         * Path 3: periodic poll fallback every 5 s. */
-        if (unlink("/tmp/hgw_cfg_changed") == 0) {
-            DmConfig dmc = {0};
-            if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0 &&
-                dmconfig_changed(&dmc, &s_last_applied_dmc)) {
-                LOG_INFO("DM config updated (trigger): cpu=%u dur=%u enable=%d",
-                         dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
-                apply_dm_config(&dmc);
-            }
-        }
-        /* dm:object-changed fires when the Ambiorix client path is used
-         * (ubus-cli, TR-069/ACS via libamxb). Raw "ubus call HGWDoctor _set"
-         * bypasses the Ambiorix write mechanism and does not trigger this
-         * signal — for that path the 5-second periodic poll below is the
-         * fallback. fetch_config_from_bus() reads directly from the local
-         * amxd object so it sees the value as soon as it is committed. */
-        if (atomic_load_explicit(&g_dm_changed, memory_order_acquire)) {
-            atomic_store_explicit(&g_dm_changed, 0, memory_order_relaxed);
-            s_dm_changed_delay = 2;
-        }
-        if (s_dm_changed_delay > 0) {
-            s_dm_changed_delay--;
-            if (s_dm_changed_delay == 0) {
-                DmConfig dmc = {0};
-                if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0 &&
-                    dmconfig_changed(&dmc, &s_last_applied_dmc)) {
-                    LOG_INFO("DM config updated (signal): cpu=%u dur=%u enable=%d",
-                             dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
-                    apply_dm_config(&dmc);
-                }
-            }
-        }
-        {
-            time_t now_poll = time(NULL);
-            if (now_poll - last_cfg_poll >= 5) {
-                last_cfg_poll = now_poll;
-                DmConfig dmc = {0};
-                bool cfg_ok = fetch_config_from_bus(&dmc);
-                if (!cfg_ok || dmc.poll_interval_s == 0) {
-                    LOG_WARN("cfg-poll: DM read failed (ok=%d poll_s=%u cpu=%u)",
-                             cfg_ok, dmc.poll_interval_s, dmc.cpu_threshold_pct);
-                } else if (dmconfig_changed(&dmc, &s_last_applied_dmc)) {
-                    LOG_INFO("DM config updated (poll): cpu=%u dur=%u enable=%d",
-                             dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
-                    apply_dm_config(&dmc);
-                }
-            }
-        }
         if (atomic_load_explicit(&g_anomaly_diag, memory_order_acquire)) {
             AnomalyEvent ev_copy;
             atomic_store_explicit(&g_anomaly_diag, 0, memory_order_relaxed);
@@ -883,20 +846,6 @@ int main(int argc, char *argv[]) {
                 LOG_INFO("Anomaly diag skipped — cooldown (%lds remaining)",
                          (long)(DIAG_COOLDOWN_S - (now_diag - last_diag_collect)));
             }
-        }
-
-        /* Update data model stats at poll_interval_s cadence, not every 100ms */
-        time_t now = time(NULL);
-        if (now - last_stats_update >= (time_t)cfg.poll_interval_s) {
-            last_stats_update = now;
-            MetricSnapshot snap;
-            if (monitor_peek_latest(&snap)) {
-                datamodel_update_stats(snap.sys_cpu_pct, snap.sys_mem_pct,
-                                       snap.sys_mem_free_kb);
-            }
-            datamodel_update_uptime((uint32_t)(time(NULL) - start_time));
-            datamodel_update_self_stats();
-            datamodel_sync_counters();
         }
 
         /* Deferred reboot countdown — tick every 100ms iteration */
@@ -951,6 +900,71 @@ int main(int argc, char *argv[]) {
         if (g_bus_ctx != NULL &&
             atomic_exchange_explicit(&s_device_obj_changed, 0, memory_order_acq_rel))
             sync_device_to_local_dm();
+
+        /* Propagate DM writes to running modules — all three paths placed here,
+         * after amxb_read(), so the socket is freshly drained before any
+         * amxd_trans_apply() fires change notifications.
+         * Path 1: trigger file written by dm_set_profile / startup.
+         * Path 2: dm:object-changed signal (reactive, libamxb _set path).
+         * Path 3: 5-second periodic poll fallback for raw ubus _set. */
+        if (unlink("/tmp/hgw_cfg_changed") == 0) {
+            DmConfig dmc = {0};
+            if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0 &&
+                dmconfig_changed(&dmc, &s_last_applied_dmc)) {
+                LOG_INFO("DM config updated (trigger): cpu=%u dur=%u enable=%d",
+                         dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
+                apply_dm_config(&dmc);
+            }
+        }
+        if (atomic_load_explicit(&g_dm_changed, memory_order_acquire)) {
+            atomic_store_explicit(&g_dm_changed, 0, memory_order_relaxed);
+            s_dm_changed_delay = 2;
+        }
+        if (s_dm_changed_delay > 0) {
+            s_dm_changed_delay--;
+            if (s_dm_changed_delay == 0) {
+                DmConfig dmc = {0};
+                if (fetch_config_from_bus(&dmc) && dmc.poll_interval_s > 0 &&
+                    dmconfig_changed(&dmc, &s_last_applied_dmc)) {
+                    LOG_INFO("DM config updated (signal): cpu=%u dur=%u enable=%d",
+                             dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
+                    apply_dm_config(&dmc);
+                }
+            }
+        }
+        {
+            time_t now_poll = time(NULL);
+            if (now_poll - last_cfg_poll >= 5) {
+                last_cfg_poll = now_poll;
+                DmConfig dmc = {0};
+                bool cfg_ok = fetch_config_from_bus(&dmc);
+                if (!cfg_ok || dmc.poll_interval_s == 0) {
+                    LOG_WARN("cfg-poll: DM read failed (ok=%d poll_s=%u cpu=%u)",
+                             cfg_ok, dmc.poll_interval_s, dmc.cpu_threshold_pct);
+                } else if (dmconfig_changed(&dmc, &s_last_applied_dmc)) {
+                    LOG_INFO("DM config updated (poll): cpu=%u dur=%u enable=%d",
+                             dmc.cpu_threshold_pct, dmc.threshold_duration_s, dmc.enable);
+                    apply_dm_config(&dmc);
+                }
+            }
+        }
+
+        /* Update data model stats — after amxb_read() so notifications go to
+         * a freshly drained socket and never block. */
+        {
+            time_t now_s = time(NULL);
+            if (now_s - last_stats_update >= (time_t)cfg.poll_interval_s) {
+                last_stats_update = now_s;
+                MetricSnapshot snap;
+                if (monitor_peek_latest(&snap)) {
+                    datamodel_update_stats(snap.sys_cpu_pct, snap.sys_mem_pct,
+                                           snap.sys_mem_free_kb);
+                }
+                datamodel_update_uptime((uint32_t)(now_s - start_time));
+                datamodel_update_self_stats();
+                datamodel_sync_counters();
+            }
+        }
 
         /* Drain pending DM updates from background threads.
          * Placed here — after amxb_read() — so the ubus socket is freshly
