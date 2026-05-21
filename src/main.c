@@ -49,6 +49,7 @@ static _Atomic int           g_anomaly_diag      = ATOMIC_VAR_INIT(0); /* set by
 static _Atomic int           g_monitoring_enabled = ATOMIC_VAR_INIT(1);
 static _Atomic int           g_dm_changed        = ATOMIC_VAR_INIT(0); /* set by DM signal */
 static _Atomic int           g_reboot_pending    = ATOMIC_VAR_INIT(0); /* deferred reboot armed */
+static _Atomic int           s_device_obj_changed = ATOMIC_VAR_INIT(0); /* Device.X_TELNET_HGWDoctor. changed — deferred to main loop */
 static int                   s_reboot_ticks      = 0;  /* 100ms ticks until reboot; main loop only */
 
 /* Per-AnomalyType last recovery dispatch time — cooldown enforcement.
@@ -550,14 +551,20 @@ static void on_upload_done(UploadStatus status, const char *path, void *userdata
 
 /* -------------------------------------------------------------------------
  * Device.X_TELNET_HGWDoctor. change callback
- * Fires when the ACS writes a param via TR-069 proxy object.
- * Mirrors the new value to HGWDoctor. so the local DM and modules pick it up.
+ * Fires from inside amxb_read() — must NOT make nested synchronous bus calls
+ * on the same context (deadlock).  Set a flag; the main loop calls
+ * sync_device_to_local_dm() after amxb_read() returns.
  * ------------------------------------------------------------------------- */
 static void on_device_object_changed(const char *sig_name,
                                       const amxc_var_t *data,
                                       void *priv) {
     (void)sig_name; (void)data; (void)priv;
+    atomic_store_explicit(&s_device_obj_changed, 1, memory_order_release);
+}
 
+/* Called from main loop after amxb_read() — socket is clean, safe to issue
+ * synchronous amxb_get / amxb_set on g_bus_ctx. */
+static void sync_device_to_local_dm(void) {
     amxc_var_t result;
     amxc_var_t result2;
     amxc_var_t params;
@@ -565,8 +572,8 @@ static void on_device_object_changed(const char *sig_name,
     amxc_var_init(&result2);
     amxc_var_init(&params);
 
-    if (amxb_get(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", 0, &result, 5) != 0) {
-        LOG_WARN("on_device_object_changed: amxb_get failed");
+    if (amxb_get(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", 0, &result, 1) != 0) {
+        LOG_WARN("sync_device_to_local_dm: amxb_get failed");
         goto done;
     }
 
@@ -588,8 +595,8 @@ static void on_device_object_changed(const char *sig_name,
             amxc_var_set_key(&params, s_mirror_params[i], v, AMXC_VAR_FLAG_COPY);
     }
 
-    if (amxb_set(g_bus_ctx, "HGWDoctor.", &params, &result2, 5) != 0)
-        LOG_WARN("on_device_object_changed: amxb_set to HGWDoctor failed");
+    if (amxb_set(g_bus_ctx, "HGWDoctor.", &params, &result2, 1) != 0)
+        LOG_WARN("sync_device_to_local_dm: amxb_set to HGWDoctor failed");
 
     atomic_store_explicit(&g_dm_changed, 1, memory_order_release);
 
@@ -937,6 +944,13 @@ int main(int argc, char *argv[]) {
         if (!did_sleep)
             usleep(100000);
         amxp_signal_read();
+
+        /* Mirror Device.X_TELNET_HGWDoctor. → HGWDoctor. if the subscription
+         * callback fired during the amxb_read() above.  Safe here: socket was
+         * just drained so nested amxb_get/set won't deadlock. */
+        if (g_bus_ctx != NULL &&
+            atomic_exchange_explicit(&s_device_obj_changed, 0, memory_order_acq_rel))
+            sync_device_to_local_dm();
 
         /* Drain pending DM updates from background threads.
          * Placed here — after amxb_read() — so the ubus socket is freshly
