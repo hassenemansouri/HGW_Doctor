@@ -82,6 +82,19 @@ typedef struct {
 static PendingDmUpdate  s_pending       = {0};
 static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* On-demand action result — stored by execute_on_demand_action_sync() and
+ * drained by the main loop AFTER the next amxb_read() drains the socket.
+ * amxd_trans_apply() emits ubus notifications synchronously; calling it
+ * while the socket receive buffer is full (accumulated during the blocking
+ * system() call) deadlocks. Deferring one iteration solves this. */
+typedef struct {
+    int            count;
+    RecoveryResult results[HGW_MAX_PROC_LIST];
+    AnomalyEvent   events[HGW_MAX_PROC_LIST];
+    bool           reset_target;
+} OnDemandPending;
+static OnDemandPending s_ondemand_pending = {0};
+
 /* Auto-recovery action type — set from flat config at startup/SIGHUP.
  * Kept separate from DM's ActionType (now a read-only status field). */
 static ActionType s_recovery_action_type = ACTION_NONE;
@@ -228,6 +241,9 @@ static void execute_on_demand_action_sync(ActionType action, const char *target)
         return;
     }
 
+    s_ondemand_pending.count        = 0;
+    s_ondemand_pending.reset_target = false;
+
     if (action == ACTION_PROCESS_RESTART && target[0] == '\0') {
         /* No specific target — restart every process in ProcessList.
          * Read directly from local amxd object — no amxb_get(), no bus round-trip. */
@@ -250,34 +266,29 @@ static void execute_on_demand_action_sync(ActionType action, const char *target)
             proc_count = s_fallback_proc_count;
         }
         LOG_INFO("On-demand restart all services (%d)", proc_count);
-        for (int i = 0; i < proc_count; i++) {
-            RecoveryResult result = {0};
-            recovery_run_sync(ACTION_PROCESS_RESTART, proc_names[i], s_scripts_dir, &result);
-            AnomalyEvent ev = {0};
-            ev.type = ANOMALY_ON_DEMAND;
-            clock_gettime(CLOCK_REALTIME, &ev.detected_at);
-            strncpy(ev.process_name, proc_names[i], HGW_MAX_PROC_NAME - 1);
-            datamodel_record_action(&result);
-            datamodel_increment_anomaly_count();
-            datamodel_append_anomaly_log(&ev, action_type_to_string(action),
-                result.result == RESULT_SUCCESS ? "Success" : "Failure");
+        for (int i = 0; i < proc_count && s_ondemand_pending.count < HGW_MAX_PROC_LIST; i++) {
+            int idx = s_ondemand_pending.count;
+            recovery_run_sync(ACTION_PROCESS_RESTART, proc_names[i], s_scripts_dir,
+                              &s_ondemand_pending.results[idx]);
+            s_ondemand_pending.events[idx].type = ANOMALY_ON_DEMAND;
+            clock_gettime(CLOCK_REALTIME, &s_ondemand_pending.events[idx].detected_at);
+            strncpy(s_ondemand_pending.events[idx].process_name, proc_names[i],
+                    HGW_MAX_PROC_NAME - 1);
+            s_ondemand_pending.count++;
         }
+        s_ondemand_pending.reset_target = true;
     } else {
-        RecoveryResult result = {0};
-        recovery_run_sync(action, target[0] ? target : NULL, s_scripts_dir, &result);
-        AnomalyEvent ev = {0};
-        ev.type = ANOMALY_ON_DEMAND;
-        clock_gettime(CLOCK_REALTIME, &ev.detected_at);
+        recovery_run_sync(action, target[0] ? target : NULL, s_scripts_dir,
+                          &s_ondemand_pending.results[0]);
+        s_ondemand_pending.events[0].type = ANOMALY_ON_DEMAND;
+        clock_gettime(CLOCK_REALTIME, &s_ondemand_pending.events[0].detected_at);
         if (target[0])
-            strncpy(ev.process_name, target, HGW_MAX_PROC_NAME - 1);
-        datamodel_record_action(&result);
-        datamodel_increment_anomaly_count();
-        datamodel_append_anomaly_log(&ev, action_type_to_string(action),
-            result.result == RESULT_SUCCESS ? "Success" : "Failure");
+            strncpy(s_ondemand_pending.events[0].process_name, target, HGW_MAX_PROC_NAME - 1);
+        s_ondemand_pending.count        = 1;
+        s_ondemand_pending.reset_target = (action == ACTION_PROCESS_RESTART);
     }
-
-    if (action == ACTION_PROCESS_RESTART)
-        datamodel_reset_on_demand_target();
+    /* DM writes (datamodel_record_action etc.) deferred to main loop —
+     * see OnDemandPending drain block after amxb_read(). */
 }
 
 static void apply_dm_config(const DmConfig *dmc) {
@@ -929,6 +940,25 @@ int main(int argc, char *argv[]) {
                 LOG_WARN("Device→HGWDoctor mirror: amxb_get failed");
             }
             amxc_var_clean(&dev_result);
+        }
+
+        /* Drain on-demand action results deferred from the previous iteration.
+         * amxb_read() above has drained the socket so amxd_trans_apply()
+         * (called inside datamodel_record_action) can safely emit ubus events. */
+        if (s_ondemand_pending.count > 0) {
+            for (int i = 0; i < s_ondemand_pending.count; i++) {
+                datamodel_record_action(&s_ondemand_pending.results[i]);
+                datamodel_increment_anomaly_count();
+                datamodel_append_anomaly_log(
+                    &s_ondemand_pending.events[i],
+                    action_type_to_string(s_ondemand_pending.results[i].action),
+                    s_ondemand_pending.results[i].result == RESULT_SUCCESS
+                        ? "Success" : "Failure");
+            }
+            if (s_ondemand_pending.reset_target)
+                datamodel_reset_on_demand_target();
+            s_ondemand_pending.count        = 0;
+            s_ondemand_pending.reset_target = false;
         }
 
         /* Execute any pending on-demand action — guarded by s_bus_ready so we
