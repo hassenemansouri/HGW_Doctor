@@ -292,8 +292,6 @@ static void apply_dm_config(const DmConfig *dmc) {
     if (new_act != ACTION_NONE && new_act != prev_act &&
         !atomic_load_explicit(&g_reboot_pending, memory_order_relaxed)) {
         execute_on_demand_action(effective.action_type, &effective);
-        /* Reset ActionType=None in the DM and in our working copy */
-        datamodel_set_action_type("None");
         strncpy(effective.action_type, "None", sizeof(effective.action_type) - 1);
     }
 
@@ -859,6 +857,7 @@ int main(int argc, char *argv[]) {
 
         /* Drain on-demand recovery results (ProcessRestart / CacheClear) */
         if (atomic_exchange(&s_ondemand_result_ready, 0)) {
+            datamodel_set_action_type("None");
             datamodel_record_action(&s_ondemand_result);
             datamodel_increment_anomaly_count();
             datamodel_append_anomaly_log(&s_ondemand_event,
