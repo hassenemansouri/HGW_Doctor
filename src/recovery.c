@@ -352,35 +352,6 @@ int recovery_dispatch_ondemand(ActionType action,
     return 0;
 }
 
-int recovery_run_sync(ActionType action, const char *proc_name,
-                      const char *scripts_dir, RecoveryResult *out) {
-    RecoveryResult result = {0};
-    result.action = action;
-    clock_gettime(CLOCK_REALTIME, &result.executed_at);
-    if (proc_name && proc_name[0] != '\0')
-        copy_string(result.process_name, sizeof(result.process_name), proc_name);
-
-    switch (action) {
-        case ACTION_PROCESS_RESTART:
-            result.exit_code = do_process_restart(scripts_dir, proc_name);
-            result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
-            break;
-        case ACTION_CACHE_CLEAR:
-            result.exit_code = do_cache_clear(scripts_dir);
-            result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
-            break;
-        default:
-            result.result = RESULT_NONE;
-            break;
-    }
-
-    LOG_INFO("Sync action done: action=%d result=%d exit=%d",
-             result.action, result.result, result.exit_code);
-
-    if (out) *out = result;
-    return result.exit_code;
-}
-
 int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdata) {
     if (!cfg) return -1;
 

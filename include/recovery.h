@@ -26,11 +26,6 @@ int  recovery_dispatch_ondemand(ActionType action,
                                  recovery_callback cb,
                                  void *userdata);
 
-/* Synchronous action runner — blocks until the action completes.
- * Fills *out with the result (may be NULL). Returns exit code (0 = success). */
-int  recovery_run_sync(ActionType action, const char *proc_name,
-                       const char *scripts_dir, RecoveryResult *out);
-
 /* Deferred reboot helpers */
 typedef enum {
     REBOOT_GUARD_OK             = 0,

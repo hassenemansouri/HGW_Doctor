@@ -36,9 +36,6 @@
 #include "logger.h"
 #include "types.h"
 
-/* ACTION_NONE must be 0 so ATOMIC_VAR_INIT(0) initialises g_ondemand_action correctly */
-_Static_assert(ACTION_NONE == 0, "ACTION_NONE must be 0 for ATOMIC_VAR_INIT(0)");
-
 /* -------------------------------------------------------------------------
  * Globals
  * ------------------------------------------------------------------------- */
@@ -51,7 +48,6 @@ static volatile sig_atomic_t g_diag_req          = 0;  /* set by SIGUSR1 — man
 static _Atomic int           g_anomaly_diag      = ATOMIC_VAR_INIT(0); /* set by on_anomaly */
 static _Atomic int           g_monitoring_enabled = ATOMIC_VAR_INIT(1);
 static _Atomic int           g_dm_changed        = ATOMIC_VAR_INIT(0); /* set by DM signal */
-static _Atomic int           g_device_changed    = ATOMIC_VAR_INIT(0); /* set by Device.* subscription */
 static _Atomic int           g_reboot_pending    = ATOMIC_VAR_INIT(0); /* deferred reboot armed */
 static int                   s_reboot_ticks      = 0;  /* 100ms ticks until reboot; main loop only */
 
@@ -82,22 +78,12 @@ typedef struct {
 static PendingDmUpdate  s_pending       = {0};
 static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* On-demand action result — stored by execute_on_demand_action_sync() and
- * drained by the main loop AFTER the next amxb_read() drains the socket.
- * amxd_trans_apply() emits ubus notifications synchronously; calling it
- * while the socket receive buffer is full (accumulated during the blocking
- * system() call) deadlocks. Deferring one iteration solves this. */
-typedef struct {
-    int            count;
-    RecoveryResult results[HGW_MAX_PROC_LIST];
-    AnomalyEvent   events[HGW_MAX_PROC_LIST];
-    bool           reset_target;
-} OnDemandPending;
-static OnDemandPending s_ondemand_pending = {0};
+/* Per-dispatch userdata for on-demand recovery threads */
+typedef struct { AnomalyEvent ev; } OnDemandData;
 
-/* Auto-recovery action type — set from flat config at startup/SIGHUP.
- * Kept separate from DM's ActionType (now a read-only status field). */
-static ActionType s_recovery_action_type = ACTION_NONE;
+static _Atomic int    s_ondemand_result_ready = ATOMIC_VAR_INIT(0);
+static RecoveryResult s_ondemand_result        = {0};
+static AnomalyEvent   s_ondemand_event         = {0};
 
 /* Last DM config applied to the running modules — used by periodic poll to
  * detect runtime ubus _set changes. */
@@ -199,23 +185,29 @@ static bool dmconfig_changed(const DmConfig *a, const DmConfig *b) {
            a->threshold_duration_s != b->threshold_duration_s ||
            a->poll_interval_s      != b->poll_interval_s      ||
            a->enable               != b->enable               ||
+           strncmp(a->action_type,      b->action_type,      sizeof(a->action_type))      != 0 ||
            strncmp(a->process_list,     b->process_list,     sizeof(a->process_list))     != 0 ||
            strncmp(a->upload_url,       b->upload_url,       sizeof(a->upload_url))       != 0 ||
            strncmp(a->diag_output_dir,  b->diag_output_dir,  sizeof(a->diag_output_dir))  != 0;
 }
 
+/* forward declaration — defined after on_recovery_done */
+static void on_ondemand_done(const RecoveryResult *result, void *userdata);
+
 /* -------------------------------------------------------------------------
- * On-demand action — runs synchronously from the main loop after amxb_read()
- * has returned.  No pthreads, no callbacks: system() blocks here, which is
- * safe because we are not inside any amxb/amxd call at this point.
+ * On-demand action dispatch — called when ActionType is written to a
+ * non-None value.  ActionType is reset to "None" immediately after so that
+ * the next poll does not re-trigger.  For Reboot, arms a deferred countdown;
+ * for ProcessRestart / CacheClear, dispatches an async recovery task.
  * ------------------------------------------------------------------------- */
-static void execute_on_demand_action_sync(ActionType action, const char *target) {
+static void execute_on_demand_action(const char *action_str, const DmConfig *dmc) {
+    ActionType action = action_str_to_type(action_str);
     if (action == ACTION_NONE) return;
 
-    LOG_INFO("On-demand action: %s target=%s",
-             action_type_to_string(action), target[0] ? target : "(none)");
+    LOG_INFO("On-demand action requested: %s", action_str);
 
     if (action == ACTION_REBOOT) {
+        /* Safety guards */
         char last_rt[32] = {0};
         datamodel_get_last_reboot_time(last_rt, sizeof(last_rt));
         RebootGuardResult guard = recovery_reboot_guard_check(last_rt);
@@ -227,72 +219,83 @@ static void execute_on_demand_action_sync(ActionType action, const char *target)
             return;
         }
         if (guard == REBOOT_GUARD_UPTIME_TOO_LOW || guard == REBOOT_GUARD_COOLDOWN) {
+            /* reason already logged by recovery_reboot_guard_check() */
             datamodel_append_ondemand_log("Reboot", "Rejected");
             return;
         }
+
+        /* Guard OK — arm deferred reboot */
         uint32_t delay_s = datamodel_get_reboot_delay_sec();
         if (delay_s == 0) delay_s = 10;
         datamodel_append_ondemand_log("Reboot", "Pending");
         datamodel_set_status(STATUS_REBOOT_PENDING);
         diag_collect(NULL);
-        s_reboot_ticks = (int)(delay_s * 10);
+        s_reboot_ticks = (int)(delay_s * 10);  /* 100ms ticks */
         atomic_store_explicit(&g_reboot_pending, 1, memory_order_release);
         LOG_INFO("Deferred reboot armed: %us countdown (%d ticks)", delay_s, s_reboot_ticks);
-        return;
-    }
 
-    s_ondemand_pending.count        = 0;
-    s_ondemand_pending.reset_target = false;
+    } else if (action == ACTION_PROCESS_RESTART) {
+        char target[HGW_MAX_PROC_NAME] = {0};
+        datamodel_get_on_demand_target(target, sizeof(target));
 
-    if (action == ACTION_PROCESS_RESTART && target[0] == '\0') {
-        /* No specific target — restart every process in ProcessList.
-         * Read directly from local amxd object — no amxb_get(), no bus round-trip. */
-        char proc_list[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME] = {0};
-        amxd_object_t *hgw = amxd_dm_findf(&g_dm, "HGWDoctor.");
-        if (hgw) {
-            amxc_var_t v;
-            amxc_var_init(&v);
-            if (amxd_object_get_param(hgw, "ProcessList", &v) == amxd_status_ok) {
-                const char *s = amxc_var_constcast(cstring_t, &v);
-                if (s) strncpy(proc_list, s, sizeof(proc_list) - 1);
+        if (target[0] != '\0') {
+            /* Single named target */
+            datamodel_reset_on_demand_target();
+            OnDemandData *data = calloc(1, sizeof(*data));
+            if (data) {
+                data->ev.type = ANOMALY_ON_DEMAND;
+                clock_gettime(CLOCK_REALTIME, &data->ev.detected_at);
+                strncpy(data->ev.process_name, target, HGW_MAX_PROC_NAME - 1);
+                recovery_dispatch_ondemand(ACTION_PROCESS_RESTART, target,
+                                           s_scripts_dir, on_ondemand_done, data);
             }
-            amxc_var_clean(&v);
+        } else {
+            /* Restart every service in ProcessList — one dispatch per process */
+            char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
+            int  proc_count = 0;
+            parse_process_list(dmc->process_list, proc_names, &proc_count);
+            if (proc_count == 0) {
+                memcpy(proc_names, s_fallback_proc_names, sizeof(proc_names));
+                proc_count = s_fallback_proc_count;
+            }
+            LOG_INFO("On-demand restart all services (%d)", proc_count);
+            for (int i = 0; i < proc_count; i++) {
+                OnDemandData *data = calloc(1, sizeof(*data));
+                if (!data) continue;
+                data->ev.type = ANOMALY_ON_DEMAND;
+                clock_gettime(CLOCK_REALTIME, &data->ev.detected_at);
+                strncpy(data->ev.process_name, proc_names[i], HGW_MAX_PROC_NAME - 1);
+                recovery_dispatch_ondemand(ACTION_PROCESS_RESTART, proc_names[i],
+                                           s_scripts_dir, on_ondemand_done, data);
+            }
         }
-        char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
-        int proc_count = 0;
-        parse_process_list(proc_list, proc_names, &proc_count);
-        if (proc_count == 0) {
-            memcpy(proc_names, s_fallback_proc_names, sizeof(proc_names));
-            proc_count = s_fallback_proc_count;
-        }
-        LOG_INFO("On-demand restart all services (%d)", proc_count);
-        for (int i = 0; i < proc_count && s_ondemand_pending.count < HGW_MAX_PROC_LIST; i++) {
-            int idx = s_ondemand_pending.count;
-            recovery_run_sync(ACTION_PROCESS_RESTART, proc_names[i], s_scripts_dir,
-                              &s_ondemand_pending.results[idx]);
-            s_ondemand_pending.events[idx].type = ANOMALY_ON_DEMAND;
-            clock_gettime(CLOCK_REALTIME, &s_ondemand_pending.events[idx].detected_at);
-            strncpy(s_ondemand_pending.events[idx].process_name, proc_names[i],
-                    HGW_MAX_PROC_NAME - 1);
-            s_ondemand_pending.count++;
-        }
-        s_ondemand_pending.reset_target = true;
     } else {
-        recovery_run_sync(action, target[0] ? target : NULL, s_scripts_dir,
-                          &s_ondemand_pending.results[0]);
-        s_ondemand_pending.events[0].type = ANOMALY_ON_DEMAND;
-        clock_gettime(CLOCK_REALTIME, &s_ondemand_pending.events[0].detected_at);
-        if (target[0])
-            strncpy(s_ondemand_pending.events[0].process_name, target, HGW_MAX_PROC_NAME - 1);
-        s_ondemand_pending.count        = 1;
-        s_ondemand_pending.reset_target = (action == ACTION_PROCESS_RESTART);
+        /* CacheClear */
+        OnDemandData *data = calloc(1, sizeof(*data));
+        if (data) {
+            data->ev.type = ANOMALY_ON_DEMAND;
+            clock_gettime(CLOCK_REALTIME, &data->ev.detected_at);
+            recovery_dispatch_ondemand(ACTION_CACHE_CLEAR, NULL,
+                                       s_scripts_dir, on_ondemand_done, data);
+        }
     }
-    /* DM writes (datamodel_record_action etc.) deferred to main loop —
-     * see OnDemandPending drain block after amxb_read(). */
 }
 
 static void apply_dm_config(const DmConfig *dmc) {
+    /* Work on a copy so we can override action_type after on-demand dispatch */
     DmConfig effective = *dmc;
+
+    /* Detect on-demand action: ActionType just changed to a non-None value.
+     * Guard g_reboot_pending prevents re-arming during an active countdown. */
+    ActionType new_act  = action_str_to_type(effective.action_type);
+    ActionType prev_act = action_str_to_type(s_last_applied_dmc.action_type);
+    if (new_act != ACTION_NONE && new_act != prev_act &&
+        !atomic_load_explicit(&g_reboot_pending, memory_order_relaxed)) {
+        execute_on_demand_action(effective.action_type, &effective);
+        /* Reset ActionType=None in the DM and in our working copy */
+        datamodel_set_action_type("None");
+        strncpy(effective.action_type, "None", sizeof(effective.action_type) - 1);
+    }
 
     char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
     int  proc_count = 0;
@@ -315,7 +318,7 @@ static void apply_dm_config(const DmConfig *dmc) {
         proc_count, effective.poll_interval_s);
 
     RecoveryConfig rcfg2 = {0};
-    rcfg2.action_type   = s_recovery_action_type;
+    rcfg2.action_type   = action_str_to_type(effective.action_type);
     rcfg2.process_count = proc_count;
     memcpy(rcfg2.process_names, proc_names, sizeof(rcfg2.process_names));
     strncpy(rcfg2.scripts_dir, s_scripts_dir, HGW_MAX_PATH - 1);
@@ -352,10 +355,10 @@ static void apply_dm_config(const DmConfig *dmc) {
     }
 
     LOG_INFO("Live config updated from DM: "
-             "cpu=%u mem=%u dur=%u poll=%u procs=%d enable=%d",
+             "cpu=%u mem=%u dur=%u poll=%u action=%s procs=%d enable=%d",
              effective.cpu_threshold_pct, effective.mem_threshold_pct,
              effective.threshold_duration_s, effective.poll_interval_s,
-             proc_count, effective.enable);
+             effective.action_type, proc_count, effective.enable);
 
     s_last_applied_dmc = effective;
 }
@@ -474,6 +477,22 @@ static void on_recovery_done(const RecoveryResult *result, void *userdata) {
 }
 
 /* -------------------------------------------------------------------------
+ * On-demand recovery done callback — one per dispatched thread, each with
+ * its own heap-allocated OnDemandData.  Queues result for the main loop.
+ * ------------------------------------------------------------------------- */
+static void on_ondemand_done(const RecoveryResult *result, void *userdata) {
+    OnDemandData *data = (OnDemandData *)userdata;
+    AnomalyEvent ev = {0};
+    if (data) {
+        ev = data->ev;
+        free(data);
+    }
+    atomic_store(&s_ondemand_result_ready, 1);
+    s_ondemand_result = *result;
+    s_ondemand_event  = ev;
+}
+
+/* -------------------------------------------------------------------------
  * Diagnostics done callback (diag thread → pending struct → main thread DM)
  * ------------------------------------------------------------------------- */
 static void on_diag_done(const char *archive_path, void *userdata) {
@@ -533,9 +552,46 @@ static void on_device_object_changed(const char *sig_name,
                                       const amxc_var_t *data,
                                       void *priv) {
     (void)sig_name; (void)data; (void)priv;
-    /* Cannot call amxb_get/amxb_set here — fires inside amxb_read() and
-     * would deadlock the ubus socket.  Defer mirror to the main loop. */
-    atomic_store_explicit(&g_device_changed, 1, memory_order_release);
+
+    amxc_var_t result;
+    amxc_var_t result2;
+    amxc_var_t params;
+    amxc_var_init(&result);
+    amxc_var_init(&result2);
+    amxc_var_init(&params);
+
+    if (amxb_get(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", 0, &result, 5) != 0) {
+        LOG_WARN("on_device_object_changed: amxb_get failed");
+        goto done;
+    }
+
+    amxc_var_t *list0 = amxc_var_get_index(&result, 0, AMXC_VAR_FLAG_DEFAULT);
+    if (!list0) goto done;
+    amxc_var_t *obj = amxc_var_get_key(list0, "Device.X_TELNET_HGWDoctor.",
+                                        AMXC_VAR_FLAG_DEFAULT);
+    if (!obj) goto done;
+
+    amxc_var_set_type(&params, AMXC_VAR_ID_HTABLE);
+
+    static const char *const s_mirror_params[] = {
+        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
+        "ActionType", "ProcessList", "Enable", "UploadURL", NULL
+    };
+    for (int i = 0; s_mirror_params[i]; i++) {
+        amxc_var_t *v = amxc_var_get_key(obj, s_mirror_params[i], AMXC_VAR_FLAG_DEFAULT);
+        if (v)
+            amxc_var_set_key(&params, s_mirror_params[i], v, AMXC_VAR_FLAG_COPY);
+    }
+
+    if (amxb_set(g_bus_ctx, "HGWDoctor.", &params, &result2, 5) != 0)
+        LOG_WARN("on_device_object_changed: amxb_set to HGWDoctor failed");
+
+    atomic_store_explicit(&g_dm_changed, 1, memory_order_release);
+
+done:
+    amxc_var_clean(&params);
+    amxc_var_clean(&result2);
+    amxc_var_clean(&result);
 }
 
 /* -------------------------------------------------------------------------
@@ -555,8 +611,7 @@ int main(int argc, char *argv[]) {
     }
     strncpy(s_scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
     memcpy(s_fallback_proc_names, cfg.process_names, sizeof(s_fallback_proc_names));
-    s_fallback_proc_count    = cfg.process_count;
-    s_recovery_action_type   = cfg.action_type;
+    s_fallback_proc_count = cfg.process_count;
 
     /* 3. Signal handling */
     install_signals();
@@ -688,7 +743,6 @@ int main(int argc, char *argv[]) {
     time_t last_diag_collect = 0;
     time_t last_wd_pet       = 0;
     time_t last_cfg_poll     = 0;
-    bool   s_bus_ready       = false;  /* true after the first poll cycle; gates on-demand actions */
     int    s_dm_changed_delay = 0;  /* countdown before applying DM signal (loop iterations) */
 #define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
     while (g_running) {
@@ -722,8 +776,7 @@ int main(int argc, char *argv[]) {
 
             strncpy(s_scripts_dir, cur->scripts_dir, HGW_MAX_PATH - 1);
             memcpy(s_fallback_proc_names, cur->process_names, sizeof(s_fallback_proc_names));
-            s_fallback_proc_count  = cur->process_count;
-            s_recovery_action_type = cur->action_type;
+            s_fallback_proc_count = cur->process_count;
 
             UploaderConfig ucfg_hup = {0};
             ucfg_hup.timeout_s     = cur->upload_timeout_s;
@@ -843,6 +896,15 @@ int main(int argc, char *argv[]) {
                 datamodel_record_upload(snap.upload_status, snap.upload_path);
         }
 
+        /* Drain on-demand recovery results (ProcessRestart / CacheClear) */
+        if (atomic_exchange(&s_ondemand_result_ready, 0)) {
+            datamodel_record_action(&s_ondemand_result);
+            datamodel_increment_anomaly_count();
+            datamodel_append_anomaly_log(&s_ondemand_event,
+                action_type_to_string(s_ondemand_result.action),
+                s_ondemand_result.result == RESULT_SUCCESS ? "Success" : "Failure");
+        }
+
         /* Update data model stats at poll_interval_s cadence, not every 100ms */
         time_t now = time(NULL);
         if (now - last_stats_update >= (time_t)cfg.poll_interval_s) {
@@ -896,80 +958,11 @@ int main(int argc, char *argv[]) {
                 struct pollfd pfd = { .fd = fd, .events = POLLIN };
                 if (poll(&pfd, 1, 100) > 0 && (pfd.revents & POLLIN))
                     amxb_read(g_bus_ctx);
-                s_bus_ready = true;
                 did_sleep = true;
             }
         }
         if (!did_sleep)
             usleep(100000);
-
-        /* Deferred Device.X_TELNET_HGWDoctor. → HGWDoctor. mirror.
-         * amxb_get/amxb_set are forbidden inside amxb_read() callbacks;
-         * we set g_device_changed there and do the actual work here. */
-        if (g_bus_ctx && atomic_exchange_explicit(&g_device_changed, 0,
-                                                   memory_order_acq_rel)) {
-            static const char *const s_mirror_params[] = {
-                "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
-                "ProcessList", "Enable", "UploadURL", NULL
-            };
-            amxc_var_t dev_result;
-            amxc_var_init(&dev_result);
-            if (amxb_get(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", 0,
-                         &dev_result, 5) == 0) {
-                amxc_var_t *list0 = amxc_var_get_index(&dev_result, 0,
-                                                        AMXC_VAR_FLAG_DEFAULT);
-                amxc_var_t *dev_obj = list0
-                    ? amxc_var_get_key(list0, "Device.X_TELNET_HGWDoctor.",
-                                       AMXC_VAR_FLAG_DEFAULT)
-                    : NULL;
-                if (dev_obj) {
-                    amxd_trans_t mirror;
-                    amxd_trans_init(&mirror);
-                    amxd_trans_select_pathf(&mirror, "%s", "HGWDoctor.");
-                    for (int i = 0; s_mirror_params[i]; i++) {
-                        amxc_var_t *v = amxc_var_get_key(dev_obj, s_mirror_params[i],
-                                                          AMXC_VAR_FLAG_DEFAULT);
-                        if (v)
-                            amxd_trans_set_param(&mirror, s_mirror_params[i], v);
-                    }
-                    if (amxd_trans_apply(&mirror, &g_dm) != amxd_status_ok)
-                        LOG_WARN("Device→HGWDoctor mirror: transaction failed");
-                    amxd_trans_clean(&mirror);
-                }
-            } else {
-                LOG_WARN("Device→HGWDoctor mirror: amxb_get failed");
-            }
-            amxc_var_clean(&dev_result);
-        }
-
-        /* Drain on-demand action results deferred from the previous iteration.
-         * amxb_read() above has drained the socket so amxd_trans_apply()
-         * (called inside datamodel_record_action) can safely emit ubus events. */
-        if (s_ondemand_pending.count > 0) {
-            for (int i = 0; i < s_ondemand_pending.count; i++) {
-                datamodel_record_action(&s_ondemand_pending.results[i]);
-                datamodel_increment_anomaly_count();
-                datamodel_append_anomaly_log(
-                    &s_ondemand_pending.events[i],
-                    action_type_to_string(s_ondemand_pending.results[i].action),
-                    s_ondemand_pending.results[i].result == RESULT_SUCCESS
-                        ? "Success" : "Failure");
-            }
-            if (s_ondemand_pending.reset_target)
-                datamodel_reset_on_demand_target();
-            s_ondemand_pending.count        = 0;
-            s_ondemand_pending.reset_target = false;
-        }
-
-        /* Execute any pending on-demand action — guarded by s_bus_ready so we
-         * never run before the first poll/amxb_read cycle has completed. */
-        if (s_bus_ready) {
-            int od = atomic_exchange_explicit(&g_ondemand_action, (int)ACTION_NONE,
-                                              memory_order_acq_rel);
-            if (od != (int)ACTION_NONE)
-                execute_on_demand_action_sync((ActionType)od, g_ondemand_target);
-        }
-
         amxp_signal_read();
     }
 

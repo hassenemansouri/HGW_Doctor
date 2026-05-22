@@ -33,6 +33,7 @@ void datamodel_cleanup(amxd_dm_t *dm, amxo_parser_t *parser);
 void datamodel_start_sync(void);  /* call after amxb_register() to activate amxs TR-181 sync */
 
 void datamodel_set_status(const char *status_str);
+void datamodel_set_action_type(const char *action_type);
 void datamodel_set_process_list(const char *process_list);
 void datamodel_update_stats(uint32_t cpu_pct, uint32_t mem_pct,
                             uint32_t mem_free_kb);
