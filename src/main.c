@@ -85,6 +85,15 @@ static _Atomic int    s_ondemand_result_ready = ATOMIC_VAR_INIT(0);
 static RecoveryResult s_ondemand_result        = {0};
 static AnomalyEvent   s_ondemand_event         = {0};
 
+/* Deferred DM writes from execute_on_demand_action() — applied in the
+ * main loop after amxb_read() has sent the ubus write response. */
+static _Atomic int s_reset_target          = ATOMIC_VAR_INIT(0);
+static _Atomic int s_ondemand_log_ready    = ATOMIC_VAR_INIT(0);
+static char        s_ondemand_log_act[32]  = {0};
+static char        s_ondemand_log_res[32]  = {0};
+static _Atomic int s_ondemand_status_ready = ATOMIC_VAR_INIT(0);
+static char        s_ondemand_status_val[32] = {0};
+
 /* Last DM config applied to the running modules — used by periodic poll to
  * detect runtime ubus _set changes. */
 static DmConfig s_last_applied_dmc = {0};
@@ -207,28 +216,35 @@ static void execute_on_demand_action(const char *action_str, const DmConfig *dmc
     LOG_INFO("On-demand action requested: %s", action_str);
 
     if (action == ACTION_REBOOT) {
-        /* Safety guards */
+        /* Safety guards — read-only DM access, no socket writes */
         char last_rt[32] = {0};
         datamodel_get_last_reboot_time(last_rt, sizeof(last_rt));
         RebootGuardResult guard = recovery_reboot_guard_check(last_rt);
 
         if (guard == REBOOT_GUARD_SAFE_MODE) {
             LOG_WARN("On-demand reboot denied: rate limit exceeded — entering SafeMode");
-            datamodel_append_ondemand_log("Reboot", "Rejected");
-            datamodel_set_status(STATUS_SAFE_MODE);
+            strncpy(s_ondemand_log_act, "Reboot",   sizeof(s_ondemand_log_act) - 1);
+            strncpy(s_ondemand_log_res, "Rejected", sizeof(s_ondemand_log_res) - 1);
+            atomic_store(&s_ondemand_log_ready, 1);
+            strncpy(s_ondemand_status_val, STATUS_SAFE_MODE, sizeof(s_ondemand_status_val) - 1);
+            atomic_store(&s_ondemand_status_ready, 1);
             return;
         }
         if (guard == REBOOT_GUARD_UPTIME_TOO_LOW || guard == REBOOT_GUARD_COOLDOWN) {
-            /* reason already logged by recovery_reboot_guard_check() */
-            datamodel_append_ondemand_log("Reboot", "Rejected");
+            strncpy(s_ondemand_log_act, "Reboot",   sizeof(s_ondemand_log_act) - 1);
+            strncpy(s_ondemand_log_res, "Rejected", sizeof(s_ondemand_log_res) - 1);
+            atomic_store(&s_ondemand_log_ready, 1);
             return;
         }
 
         /* Guard OK — arm deferred reboot */
         uint32_t delay_s = datamodel_get_reboot_delay_sec();
         if (delay_s == 0) delay_s = 10;
-        datamodel_append_ondemand_log("Reboot", "Pending");
-        datamodel_set_status(STATUS_REBOOT_PENDING);
+        strncpy(s_ondemand_log_act, "Reboot",  sizeof(s_ondemand_log_act) - 1);
+        strncpy(s_ondemand_log_res, "Pending", sizeof(s_ondemand_log_res) - 1);
+        atomic_store(&s_ondemand_log_ready, 1);
+        strncpy(s_ondemand_status_val, STATUS_REBOOT_PENDING, sizeof(s_ondemand_status_val) - 1);
+        atomic_store(&s_ondemand_status_ready, 1);
         diag_collect(NULL);
         s_reboot_ticks = (int)(delay_s * 10);  /* 100ms ticks */
         atomic_store_explicit(&g_reboot_pending, 1, memory_order_release);
@@ -239,8 +255,8 @@ static void execute_on_demand_action(const char *action_str, const DmConfig *dmc
         datamodel_get_on_demand_target(target, sizeof(target));
 
         if (target[0] != '\0') {
-            /* Single named target */
-            datamodel_reset_on_demand_target();
+            /* Single named target — defer the DM reset to the drain block */
+            atomic_store(&s_reset_target, 1);
             OnDemandData *data = calloc(1, sizeof(*data));
             if (data) {
                 data->ev.type = ANOMALY_ON_DEMAND;
@@ -854,6 +870,15 @@ int main(int argc, char *argv[]) {
             if (snap.upload_valid)
                 datamodel_record_upload(snap.upload_status, snap.upload_path);
         }
+
+        /* Drain deferred DM writes from execute_on_demand_action() — safe here,
+         * after amxb_read() has already sent the write response to the caller. */
+        if (atomic_exchange(&s_ondemand_log_ready, 0))
+            datamodel_append_ondemand_log(s_ondemand_log_act, s_ondemand_log_res);
+        if (atomic_exchange(&s_ondemand_status_ready, 0))
+            datamodel_set_status(s_ondemand_status_val);
+        if (atomic_exchange(&s_reset_target, 0))
+            datamodel_reset_on_demand_target();
 
         /* Drain on-demand recovery results (ProcessRestart / CacheClear) */
         if (atomic_exchange(&s_ondemand_result_ready, 0)) {
