@@ -35,6 +35,12 @@
 #include "types.h"
 
 /* -------------------------------------------------------------------------
+ * Global flags — written by dm_execute_action() RPC, consumed by main loop
+ * ------------------------------------------------------------------------- */
+_Atomic int  g_ondemand_action = ATOMIC_VAR_INIT(0);
+char         g_ondemand_target[HGW_MAX_PROC_NAME] = {0};
+
+/* -------------------------------------------------------------------------
  * Internal helpers
  * ------------------------------------------------------------------------- */
 static amxd_dm_t         *s_dm = NULL;
@@ -197,6 +203,14 @@ static uint32_t dm_read_uint32(const char *param_path) {
     return result;
 }
 
+static ActionType dm_action_str_to_type(const char *s) {
+    if (!s || s[0] == '\0') return ACTION_NONE;
+    if (strcasecmp(s, "ProcessRestart") == 0) return ACTION_PROCESS_RESTART;
+    if (strcasecmp(s, "CacheClear")     == 0) return ACTION_CACHE_CLEAR;
+    if (strcasecmp(s, "Reboot")         == 0) return ACTION_REBOOT;
+    return ACTION_NONE;
+}
+
 static void dm_set_datetime_now(const char *param_path) {
     char buf[32];
     time_t now = time(NULL);
@@ -326,8 +340,8 @@ void datamodel_set_process_list(const char *process_list) {
 
 void datamodel_sync_startup(const char *action_type, const char *upload_url,
                              const char *diag_output_dir) {
-    if (action_type    && action_type[0])    dm_set_string(TR181_ACTION_TYPE,     action_type);
-    if (upload_url     && upload_url[0])     dm_set_string(TR181_UPLOAD_URL,      upload_url);
+    (void)action_type;  /* ActionType is now a read-only status field; not written at startup */
+    if (upload_url      && upload_url[0])      dm_set_string(TR181_UPLOAD_URL,      upload_url);
     if (diag_output_dir && diag_output_dir[0]) dm_set_string(TR181_DIAG_OUTPUT_DIR, diag_output_dir);
 }
 
@@ -357,6 +371,7 @@ void datamodel_record_action(const RecoveryResult *r) {
         default: break;
     }
 
+    dm_set_string(TR181_ACTION_TYPE,        type_str);
     dm_set_string(TR181_LAST_ACTION_TYPE,   type_str);
     dm_set_string(TR181_LAST_ACTION_STATUS, result_str);
     dm_set_datetime_now(TR181_LAST_ACTION_TIME);
@@ -670,7 +685,7 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
 
     static const char * const profile_params[] = {
         "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
-        "ActionType", "ProcessList",
+        "ProcessList",
         NULL
     };
     amxd_trans_t trans;
@@ -701,6 +716,28 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
 
     syslog(LOG_INFO, "Profile '%s' activated", profile_name);
     amxc_var_set(int32_t, ret, 0);
+    return amxd_status_ok;
+}
+
+amxd_status_t dm_execute_action(amxd_object_t *obj, amxd_function_t *fn,
+                                amxc_var_t *args, amxc_var_t *ret) {
+    (void)obj; (void)fn; (void)ret;
+    const char *action = GET_CHAR(args, "Action");
+    const char *target = GET_CHAR(args, "Target");
+
+    ActionType act = dm_action_str_to_type(action);
+    if (act == ACTION_NONE) {
+        syslog(LOG_WARNING, "ExecuteAction: unknown action '%s'", action ? action : "");
+        return amxd_status_invalid_value;
+    }
+
+    atomic_store_explicit(&g_ondemand_action, (int)act, memory_order_relaxed);
+    if (target && target[0])
+        strncpy(g_ondemand_target, target, HGW_MAX_PROC_NAME - 1);
+    else
+        g_ondemand_target[0] = '\0';
+
+    syslog(LOG_INFO, "ExecuteAction: %s target=%s", action, target ? target : "");
     return amxd_status_ok;
 }
 
@@ -776,10 +813,6 @@ bool datamodel_get_config(DmConfig *out) {
 /* -------------------------------------------------------------------------
  * On-demand reboot helpers
  * ------------------------------------------------------------------------- */
-void datamodel_set_action_type(const char *action_type) {
-    dm_set_string(TR181_ACTION_TYPE, action_type ? action_type : "None");
-}
-
 uint32_t datamodel_get_reboot_delay_sec(void) {
     return dm_read_uint32(TR181_REBOOT_DELAY_SEC);
 }

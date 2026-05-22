@@ -78,9 +78,9 @@ typedef struct {
 static PendingDmUpdate  s_pending       = {0};
 static pthread_mutex_t  s_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* On-demand action to execute after amxb_read() returns (avoids nested bus calls) */
-static _Atomic int s_ondemand_action = ATOMIC_VAR_INIT(0);
-static char        s_ondemand_target[HGW_MAX_PROC_NAME] = {0};
+/* Auto-recovery action type — set from flat config at startup/SIGHUP.
+ * Kept separate from DM's ActionType (now a read-only status field). */
+static ActionType s_recovery_action_type = ACTION_NONE;
 
 /* Last DM config applied to the running modules — used by periodic poll to
  * detect runtime ubus _set changes. */
@@ -182,7 +182,6 @@ static bool dmconfig_changed(const DmConfig *a, const DmConfig *b) {
            a->threshold_duration_s != b->threshold_duration_s ||
            a->poll_interval_s      != b->poll_interval_s      ||
            a->enable               != b->enable               ||
-           strncmp(a->action_type,      b->action_type,      sizeof(a->action_type))      != 0 ||
            strncmp(a->process_list,     b->process_list,     sizeof(a->process_list))     != 0 ||
            strncmp(a->upload_url,       b->upload_url,       sizeof(a->upload_url))       != 0 ||
            strncmp(a->diag_output_dir,  b->diag_output_dir,  sizeof(a->diag_output_dir))  != 0;
@@ -268,24 +267,7 @@ static void execute_on_demand_action_sync(ActionType action, const char *target)
 }
 
 static void apply_dm_config(const DmConfig *dmc) {
-    /* Work on a copy so we can override action_type after on-demand dispatch */
     DmConfig effective = *dmc;
-
-    /* Detect on-demand action: ActionType just changed to a non-None value.
-     * Guard g_reboot_pending prevents re-arming during an active countdown. */
-    ActionType new_act  = action_str_to_type(effective.action_type);
-    ActionType prev_act = action_str_to_type(s_last_applied_dmc.action_type);
-    if (new_act != ACTION_NONE && new_act != prev_act &&
-        !atomic_load_explicit(&g_reboot_pending, memory_order_relaxed)) {
-        /* Store action for execution after amxb_read() returns — prevents nested bus calls */
-        atomic_store_explicit(&s_ondemand_action, (int)new_act, memory_order_relaxed);
-        strncpy(s_ondemand_target, effective.on_demand_target,
-                sizeof(s_ondemand_target) - 1);
-        datamodel_set_action_type("None");
-        strncpy(effective.action_type, "None", sizeof(effective.action_type) - 1);
-        s_last_applied_dmc = effective;
-        return;
-    }
 
     char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
     int  proc_count = 0;
@@ -308,7 +290,7 @@ static void apply_dm_config(const DmConfig *dmc) {
         proc_count, effective.poll_interval_s);
 
     RecoveryConfig rcfg2 = {0};
-    rcfg2.action_type   = action_str_to_type(effective.action_type);
+    rcfg2.action_type   = s_recovery_action_type;
     rcfg2.process_count = proc_count;
     memcpy(rcfg2.process_names, proc_names, sizeof(rcfg2.process_names));
     strncpy(rcfg2.scripts_dir, s_scripts_dir, HGW_MAX_PATH - 1);
@@ -345,10 +327,10 @@ static void apply_dm_config(const DmConfig *dmc) {
     }
 
     LOG_INFO("Live config updated from DM: "
-             "cpu=%u mem=%u dur=%u poll=%u action=%s procs=%d enable=%d",
+             "cpu=%u mem=%u dur=%u poll=%u procs=%d enable=%d",
              effective.cpu_threshold_pct, effective.mem_threshold_pct,
              effective.threshold_duration_s, effective.poll_interval_s,
-             effective.action_type, proc_count, effective.enable);
+             proc_count, effective.enable);
 
     s_last_applied_dmc = effective;
 }
@@ -549,7 +531,7 @@ static void on_device_object_changed(const char *sig_name,
 
     static const char *const s_mirror_params[] = {
         "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
-        "ActionType", "ProcessList", "Enable", "UploadURL", NULL
+        "ProcessList", "Enable", "UploadURL", NULL
     };
     for (int i = 0; s_mirror_params[i]; i++) {
         amxc_var_t *v = amxc_var_get_key(obj, s_mirror_params[i], AMXC_VAR_FLAG_DEFAULT);
@@ -585,7 +567,8 @@ int main(int argc, char *argv[]) {
     }
     strncpy(s_scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
     memcpy(s_fallback_proc_names, cfg.process_names, sizeof(s_fallback_proc_names));
-    s_fallback_proc_count = cfg.process_count;
+    s_fallback_proc_count    = cfg.process_count;
+    s_recovery_action_type   = cfg.action_type;
 
     /* 3. Signal handling */
     install_signals();
@@ -750,7 +733,8 @@ int main(int argc, char *argv[]) {
 
             strncpy(s_scripts_dir, cur->scripts_dir, HGW_MAX_PATH - 1);
             memcpy(s_fallback_proc_names, cur->process_names, sizeof(s_fallback_proc_names));
-            s_fallback_proc_count = cur->process_count;
+            s_fallback_proc_count  = cur->process_count;
+            s_recovery_action_type = cur->action_type;
 
             UploaderConfig ucfg_hup = {0};
             ucfg_hup.timeout_s     = cur->upload_timeout_s;
@@ -932,10 +916,10 @@ int main(int argc, char *argv[]) {
         /* Execute any pending on-demand action now — amxb_read() has returned,
          * so it is safe to call system() and amxd functions from the main thread. */
         {
-            int od = atomic_exchange_explicit(&s_ondemand_action, (int)ACTION_NONE,
+            int od = atomic_exchange_explicit(&g_ondemand_action, (int)ACTION_NONE,
                                               memory_order_acq_rel);
             if (od != (int)ACTION_NONE)
-                execute_on_demand_action_sync((ActionType)od, s_ondemand_target);
+                execute_on_demand_action_sync((ActionType)od, g_ondemand_target);
         }
 
         amxp_signal_read();

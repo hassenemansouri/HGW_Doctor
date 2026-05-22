@@ -53,7 +53,6 @@ void datamodel_sync_startup(const char *action_type, const char *upload_url,
 void datamodel_sync_counters(void);
 
 /* On-demand reboot helpers */
-void     datamodel_set_action_type(const char *action_type);
 uint32_t datamodel_get_reboot_delay_sec(void);
 void     datamodel_get_last_reboot_time(char *buf, size_t len);
 void     datamodel_append_ondemand_log(const char *action_taken,
@@ -64,11 +63,18 @@ bool     datamodel_was_deferred_reboot_boot(void);
 void datamodel_get_on_demand_target(char *buf, size_t len);
 void datamodel_reset_on_demand_target(void);
 
+/* Global flags set by dm_execute_action(); consumed by the main loop after
+ * amxb_read() returns so amxd functions are safe to call. */
+extern _Atomic int  g_ondemand_action;
+extern char         g_ondemand_target[HGW_MAX_PROC_NAME];
+
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);
 amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
                                 amxc_var_t *args, amxc_var_t *ret);
 amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
                              amxc_var_t *args, amxc_var_t *ret);
+amxd_status_t dm_execute_action(amxd_object_t *obj, amxd_function_t *fn,
+                                amxc_var_t *args, amxc_var_t *ret);
 
 #endif /* HGW_DATAMODEL_H */
