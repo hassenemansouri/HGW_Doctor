@@ -36,6 +36,9 @@
 #include "logger.h"
 #include "types.h"
 
+/* ACTION_NONE must be 0 so ATOMIC_VAR_INIT(0) initialises g_ondemand_action correctly */
+_Static_assert(ACTION_NONE == 0, "ACTION_NONE must be 0 for ATOMIC_VAR_INIT(0)");
+
 /* -------------------------------------------------------------------------
  * Globals
  * ------------------------------------------------------------------------- */
@@ -225,12 +228,22 @@ static void execute_on_demand_action_sync(ActionType action, const char *target)
     }
 
     if (action == ACTION_PROCESS_RESTART && target[0] == '\0') {
-        /* No specific target — restart every process in ProcessList */
-        DmConfig dmc = {0};
-        fetch_config_from_bus(&dmc);
+        /* No specific target — restart every process in ProcessList.
+         * Read directly from local amxd object — no amxb_get(), no bus round-trip. */
+        char proc_list[HGW_MAX_PROC_LIST * HGW_MAX_PROC_NAME] = {0};
+        amxd_object_t *hgw = amxd_dm_findf(&g_dm, "HGWDoctor.");
+        if (hgw) {
+            amxc_var_t v;
+            amxc_var_init(&v);
+            if (amxd_object_get_param(hgw, "ProcessList", &v) == amxd_status_ok) {
+                const char *s = amxc_var_constcast(cstring_t, &v);
+                if (s) strncpy(proc_list, s, sizeof(proc_list) - 1);
+            }
+            amxc_var_clean(&v);
+        }
         char proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
         int proc_count = 0;
-        parse_process_list(dmc.process_list, proc_names, &proc_count);
+        parse_process_list(proc_list, proc_names, &proc_count);
         if (proc_count == 0) {
             memcpy(proc_names, s_fallback_proc_names, sizeof(proc_names));
             proc_count = s_fallback_proc_count;
@@ -700,6 +713,7 @@ int main(int argc, char *argv[]) {
     time_t last_diag_collect = 0;
     time_t last_wd_pet       = 0;
     time_t last_cfg_poll     = 0;
+    bool   s_bus_ready       = false;  /* true after the first poll cycle; gates on-demand actions */
     int    s_dm_changed_delay = 0;  /* countdown before applying DM signal (loop iterations) */
 #define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
     while (g_running) {
@@ -907,15 +921,16 @@ int main(int argc, char *argv[]) {
                 struct pollfd pfd = { .fd = fd, .events = POLLIN };
                 if (poll(&pfd, 1, 100) > 0 && (pfd.revents & POLLIN))
                     amxb_read(g_bus_ctx);
+                s_bus_ready = true;
                 did_sleep = true;
             }
         }
         if (!did_sleep)
             usleep(100000);
 
-        /* Execute any pending on-demand action now — amxb_read() has returned,
-         * so it is safe to call system() and amxd functions from the main thread. */
-        {
+        /* Execute any pending on-demand action — guarded by s_bus_ready so we
+         * never run before the first poll/amxb_read cycle has completed. */
+        if (s_bus_ready) {
             int od = atomic_exchange_explicit(&g_ondemand_action, (int)ACTION_NONE,
                                               memory_order_acq_rel);
             if (od != (int)ACTION_NONE)
