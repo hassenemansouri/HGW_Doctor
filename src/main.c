@@ -707,24 +707,6 @@ int main(int argc, char *argv[]) {
     int    s_dm_changed_delay = 0;  /* countdown before applying DM signal (loop iterations) */
 #define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
     while (g_running) {
-        /* 1. Drain all pending ubus events FIRST so write responses are sent
-         *    back to callers (ubus-cli, ACS) before any downstream processing. */
-        {
-            bool did_sleep = false;
-            if (g_bus_ctx != NULL) {
-                int fd = amxb_get_fd(g_bus_ctx);
-                if (fd >= 0) {
-                    struct pollfd pfd = { .fd = fd, .events = POLLIN };
-                    if (poll(&pfd, 1, 100) > 0 && (pfd.revents & POLLIN))
-                        amxb_read(g_bus_ctx);
-                    did_sleep = true;
-                }
-            }
-            if (!did_sleep)
-                usleep(100000);
-            amxp_signal_read();
-        }
-
         if (g_reload_cfg) {
             g_reload_cfg = 0;
             config_reload();
@@ -928,7 +910,21 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* amxb_read() and amxp_signal_read() moved to top of loop. */
+        /* Process ubus events; fallback sleep ensures we never busy-spin.
+         * poll() has no fd-number upper limit unlike FD_SET/select. */
+        bool did_sleep = false;
+        if (g_bus_ctx != NULL) {
+            int fd = amxb_get_fd(g_bus_ctx);
+            if (fd >= 0) {
+                struct pollfd pfd = { .fd = fd, .events = POLLIN };
+                if (poll(&pfd, 1, 100) > 0 && (pfd.revents & POLLIN))
+                    amxb_read(g_bus_ctx);
+                did_sleep = true;
+            }
+        }
+        if (!did_sleep)
+            usleep(100000);
+        amxp_signal_read();
     }
 
     /* 8. Graceful shutdown */
