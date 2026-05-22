@@ -51,6 +51,7 @@ static volatile sig_atomic_t g_diag_req          = 0;  /* set by SIGUSR1 — man
 static _Atomic int           g_anomaly_diag      = ATOMIC_VAR_INIT(0); /* set by on_anomaly */
 static _Atomic int           g_monitoring_enabled = ATOMIC_VAR_INIT(1);
 static _Atomic int           g_dm_changed        = ATOMIC_VAR_INIT(0); /* set by DM signal */
+static _Atomic int           g_device_changed    = ATOMIC_VAR_INIT(0); /* set by Device.* subscription */
 static _Atomic int           g_reboot_pending    = ATOMIC_VAR_INIT(0); /* deferred reboot armed */
 static int                   s_reboot_ticks      = 0;  /* 100ms ticks until reboot; main loop only */
 
@@ -521,46 +522,9 @@ static void on_device_object_changed(const char *sig_name,
                                       const amxc_var_t *data,
                                       void *priv) {
     (void)sig_name; (void)data; (void)priv;
-
-    amxc_var_t result;
-    amxc_var_t result2;
-    amxc_var_t params;
-    amxc_var_init(&result);
-    amxc_var_init(&result2);
-    amxc_var_init(&params);
-
-    if (amxb_get(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", 0, &result, 5) != 0) {
-        LOG_WARN("on_device_object_changed: amxb_get failed");
-        goto done;
-    }
-
-    amxc_var_t *list0 = amxc_var_get_index(&result, 0, AMXC_VAR_FLAG_DEFAULT);
-    if (!list0) goto done;
-    amxc_var_t *obj = amxc_var_get_key(list0, "Device.X_TELNET_HGWDoctor.",
-                                        AMXC_VAR_FLAG_DEFAULT);
-    if (!obj) goto done;
-
-    amxc_var_set_type(&params, AMXC_VAR_ID_HTABLE);
-
-    static const char *const s_mirror_params[] = {
-        "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
-        "ProcessList", "Enable", "UploadURL", NULL
-    };
-    for (int i = 0; s_mirror_params[i]; i++) {
-        amxc_var_t *v = amxc_var_get_key(obj, s_mirror_params[i], AMXC_VAR_FLAG_DEFAULT);
-        if (v)
-            amxc_var_set_key(&params, s_mirror_params[i], v, AMXC_VAR_FLAG_COPY);
-    }
-
-    if (amxb_set(g_bus_ctx, "HGWDoctor.", &params, &result2, 5) != 0)
-        LOG_WARN("on_device_object_changed: amxb_set to HGWDoctor failed");
-
-    atomic_store_explicit(&g_dm_changed, 1, memory_order_release);
-
-done:
-    amxc_var_clean(&params);
-    amxc_var_clean(&result2);
-    amxc_var_clean(&result);
+    /* Cannot call amxb_get/amxb_set here — fires inside amxb_read() and
+     * would deadlock the ubus socket.  Defer mirror to the main loop. */
+    atomic_store_explicit(&g_device_changed, 1, memory_order_release);
 }
 
 /* -------------------------------------------------------------------------
@@ -927,6 +891,45 @@ int main(int argc, char *argv[]) {
         }
         if (!did_sleep)
             usleep(100000);
+
+        /* Deferred Device.X_TELNET_HGWDoctor. → HGWDoctor. mirror.
+         * amxb_get/amxb_set are forbidden inside amxb_read() callbacks;
+         * we set g_device_changed there and do the actual work here. */
+        if (g_bus_ctx && atomic_exchange_explicit(&g_device_changed, 0,
+                                                   memory_order_acq_rel)) {
+            static const char *const s_mirror_params[] = {
+                "CPUThreshold", "MemThreshold", "ThresholdDuration", "PollInterval",
+                "ProcessList", "Enable", "UploadURL", NULL
+            };
+            amxc_var_t dev_result;
+            amxc_var_init(&dev_result);
+            if (amxb_get(g_bus_ctx, "Device.X_TELNET_HGWDoctor.", 0,
+                         &dev_result, 5) == 0) {
+                amxc_var_t *list0 = amxc_var_get_index(&dev_result, 0,
+                                                        AMXC_VAR_FLAG_DEFAULT);
+                amxc_var_t *dev_obj = list0
+                    ? amxc_var_get_key(list0, "Device.X_TELNET_HGWDoctor.",
+                                       AMXC_VAR_FLAG_DEFAULT)
+                    : NULL;
+                if (dev_obj) {
+                    amxd_trans_t mirror;
+                    amxd_trans_init(&mirror);
+                    amxd_trans_select_pathf(&mirror, "%s", "HGWDoctor.");
+                    for (int i = 0; s_mirror_params[i]; i++) {
+                        amxc_var_t *v = amxc_var_get_key(dev_obj, s_mirror_params[i],
+                                                          AMXC_VAR_FLAG_DEFAULT);
+                        if (v)
+                            amxd_trans_set_param(&mirror, s_mirror_params[i], v);
+                    }
+                    if (amxd_trans_apply(&mirror, &g_dm) != amxd_status_ok)
+                        LOG_WARN("Device→HGWDoctor mirror: transaction failed");
+                    amxd_trans_clean(&mirror);
+                }
+            } else {
+                LOG_WARN("Device→HGWDoctor mirror: amxb_get failed");
+            }
+            amxc_var_clean(&dev_result);
+        }
 
         /* Execute any pending on-demand action — guarded by s_bus_ready so we
          * never run before the first poll/amxb_read cycle has completed. */
