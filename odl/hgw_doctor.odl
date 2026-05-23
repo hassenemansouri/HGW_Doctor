@@ -38,8 +38,10 @@ import "hgw_doctor.so" as "hgw_doctor";
         %persistent uint32 PollInterval = 5;         /* seconds between metric samples */
 
         /* Recovery */
-        /* ActionType: read-only status showing the last executed action. */
-        %read-only string ActionType = "None";
+        /* ActionType: "ProcessRestart" | "CacheClear" | "Reboot" | "None"
+         * Writing a non-None value triggers an immediate on-demand action
+         * and resets ActionType back to "None" automatically. */
+        %persistent string ActionType = "None";
         %persistent string ProcessList = "";
         %persistent string OnDemandTarget = "";  /* specific target for on-demand ProcessRestart */
         %persistent uint32 RebootDelaySec = 10;
@@ -101,10 +103,6 @@ import "hgw_doctor.so" as "hgw_doctor";
         uint32 TriggerDiagnostics() <!import:hgw_doctor:dm_trigger_diagnostics!>;
         void ResetCounters() <!import:hgw_doctor:dm_reset_counters!>;
         int32 SetProfile(%in string ProfileName) <!import:hgw_doctor:dm_set_profile!>;
-        void ExecuteAction(
-            %in string Action,   /* "ProcessRestart" | "CacheClear" | "Reboot" */
-            %in string Target    /* process name, empty = all */
-        ) <!import:hgw_doctor:dm_execute_action!>;
     }
 }
 
