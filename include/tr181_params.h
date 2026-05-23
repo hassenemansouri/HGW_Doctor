@@ -68,6 +68,9 @@
 /* ── AnomalyLog table ────────────────────────────────────────────────────── */
 #define TR181_ANOMALY_LOG         TR181_ROOT ".AnomalyLog"
 
+/* ── MonitoredProcess table ──────────────────────────────────────────────── */
+#define TR181_MONITORED_PROCESS   TR181_ROOT ".MonitoredProcess"
+
 /* ── String values for ActionType parameter ─────────────────────────────── */
 #define ACTSTR_NONE               "None"
 #define ACTSTR_PROCESS_RESTART    "ProcessRestart"

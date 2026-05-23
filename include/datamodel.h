@@ -64,6 +64,14 @@ bool     datamodel_was_deferred_reboot_boot(void);
 void datamodel_get_on_demand_target(char *buf, size_t len);
 void datamodel_reset_on_demand_target(void);
 
+/* MonitoredProcess[] table helpers */
+void datamodel_update_monitored_process(const char *name, const char *status,
+                                        uint32_t pid, uint32_t cpu_pct,
+                                        uint32_t mem_pct);
+void datamodel_record_process_restart(const char *name);
+void datamodel_sync_monitored_processes(
+        const char proc_names[][HGW_MAX_PROC_NAME], int proc_count);
+
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);
 amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,

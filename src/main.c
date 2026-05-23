@@ -330,6 +330,8 @@ static void apply_dm_config(const DmConfig *dmc) {
     monitor_update_config(
         (const char (*)[HGW_MAX_PROC_NAME]) proc_names,
         proc_count, effective.poll_interval_s);
+    datamodel_sync_monitored_processes(
+        (const char (*)[HGW_MAX_PROC_NAME]) proc_names, proc_count);
 
     RecoveryConfig rcfg2 = {0};
     rcfg2.action_type   = action_str_to_type(effective.action_type);
@@ -666,6 +668,8 @@ int main(int argc, char *argv[]) {
     datamodel_set_process_list(proc_list);
     datamodel_sync_startup(action_type_to_string(cfg.action_type),
                             cfg.upload_url, cfg.diag_output_dir);
+    datamodel_sync_monitored_processes(
+        (const char (*)[HGW_MAX_PROC_NAME]) cfg.process_names, cfg.process_count);
 
     RecoveryConfig rcfg = {0};
     rcfg.action_type   = cfg.action_type;
@@ -866,6 +870,10 @@ int main(int argc, char *argv[]) {
                     action_type_to_string(snap.recovery_result.action),
                     snap.recovery_result.result == RESULT_SUCCESS ? "Success" : "Failure"
                 );
+                if (snap.recovery_result.action == ACTION_PROCESS_RESTART &&
+                    snap.recovery_result.result == RESULT_SUCCESS &&
+                    snap.recovery_result.process_name[0] != '\0')
+                    datamodel_record_process_restart(snap.recovery_result.process_name);
             }
             if (snap.upload_valid)
                 datamodel_record_upload(snap.upload_status, snap.upload_path);
@@ -888,6 +896,10 @@ int main(int argc, char *argv[]) {
             datamodel_append_anomaly_log(&s_ondemand_event,
                 action_type_to_string(s_ondemand_result.action),
                 s_ondemand_result.result == RESULT_SUCCESS ? "Success" : "Failure");
+            if (s_ondemand_result.action == ACTION_PROCESS_RESTART &&
+                s_ondemand_result.result == RESULT_SUCCESS &&
+                s_ondemand_result.process_name[0] != '\0')
+                datamodel_record_process_restart(s_ondemand_result.process_name);
         }
 
         /* Update data model stats at poll_interval_s cadence, not every 100ms */
@@ -898,6 +910,15 @@ int main(int argc, char *argv[]) {
             if (monitor_peek_latest(&snap)) {
                 datamodel_update_stats(snap.sys_cpu_pct, snap.sys_mem_pct,
                                        snap.sys_mem_free_kb);
+                for (int pi = 0; pi < snap.proc_count; pi++) {
+                    const ProcessStat *ps = &snap.procs[pi];
+                    datamodel_update_monitored_process(
+                        ps->name,
+                        ps->alive ? "Running" : "Dead",
+                        (uint32_t)ps->pid,
+                        ps->cpu_pct,
+                        ps->mem_pct);
+                }
             }
             datamodel_update_uptime((uint32_t)(time(NULL) - start_time));
             datamodel_update_self_stats();

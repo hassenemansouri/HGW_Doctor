@@ -99,6 +99,20 @@ import "hgw_doctor.so" as "hgw_doctor";
             %read-only string ActionResult = "";
         }
 
+        /* Per-process monitoring table — path: HGWDoctor.MonitoredProcess.{i}. */
+        object MonitoredProcess[] {
+            %persistent %key string Name          = "";
+            %persistent uint32 CPUThreshold       = 80;
+            %persistent uint32 MemThreshold       = 80;
+            %persistent string ActionType         = "ProcessRestart";
+            %persistent %read-only string Status  = "Unknown";
+            %persistent %read-only uint32 CurrentCPU  = 0;
+            %persistent %read-only uint32 CurrentMem  = 0;
+            %persistent %read-only uint32 PID         = 0;
+            %persistent %read-only uint32 RestartCount    = 0;
+            %persistent %read-only string LastRestartTime = "";
+        }
+
         /* RPC methods */
         uint32 TriggerDiagnostics() <!import:hgw_doctor:dm_trigger_diagnostics!>;
         void ResetCounters() <!import:hgw_doctor:dm_reset_counters!>;

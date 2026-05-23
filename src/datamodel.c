@@ -565,6 +565,148 @@ void datamodel_reset_all(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * MonitoredProcess[] table helpers
+ * ------------------------------------------------------------------------- */
+
+static amxd_object_t *mp_find_by_name(const char *name) {
+    amxd_object_t *mp_tmpl = amxd_dm_findf(s_dm, "HGWDoctor.MonitoredProcess.");
+    if (!mp_tmpl || !name) return NULL;
+
+    amxc_var_t val;
+    amxc_var_init(&val);
+    amxd_object_t *found = NULL;
+
+    amxd_object_for_each(instance, it, mp_tmpl) {
+        amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+        if (amxd_object_get_param(inst, "Name", &val) == amxd_status_ok) {
+            const char *n = amxc_var_constcast(cstring_t, &val);
+            if (n && strcmp(n, name) == 0) {
+                found = inst;
+                break;
+            }
+        }
+    }
+    amxc_var_clean(&val);
+    return found;
+}
+
+void datamodel_update_monitored_process(const char *name, const char *status,
+                                        uint32_t pid, uint32_t cpu_pct,
+                                        uint32_t mem_pct) {
+    if (!s_dm || !name || name[0] == '\0') return;
+
+    amxd_object_t *mp_tmpl = amxd_dm_findf(s_dm, "HGWDoctor.MonitoredProcess.");
+    if (!mp_tmpl) return;
+
+    amxd_object_t *inst = mp_find_by_name(name);
+
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+
+    if (!inst) {
+        amxd_trans_select_object(&trans, mp_tmpl);
+        amxd_trans_add_inst(&trans, 0, NULL);
+        amxd_trans_set_value(cstring_t, &trans, "Name", name);
+    } else {
+        amxd_trans_select_object(&trans, inst);
+    }
+
+    amxd_trans_set_value(cstring_t, &trans, "Status",     status ? status : "Unknown");
+    amxd_trans_set_value(uint32_t,  &trans, "PID",        pid);
+    amxd_trans_set_value(uint32_t,  &trans, "CurrentCPU", cpu_pct);
+    amxd_trans_set_value(uint32_t,  &trans, "CurrentMem", mem_pct);
+
+    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
+    if (st != amxd_status_ok)
+        syslog(LOG_WARNING, "Failed to update MonitoredProcess '%s' (status=%d)", name, st);
+    amxd_trans_clean(&trans);
+}
+
+void datamodel_record_process_restart(const char *name) {
+    if (!s_dm || !name || name[0] == '\0') return;
+
+    amxd_object_t *inst = mp_find_by_name(name);
+    if (!inst) return;
+
+    amxc_var_t val;
+    amxc_var_init(&val);
+    uint32_t count = 0;
+    if (amxd_object_get_param(inst, "RestartCount", &val) == amxd_status_ok)
+        count = amxc_var_dyncast(uint32_t, &val);
+    amxc_var_clean(&val);
+
+    char ts[32];
+    dm_format_utc(time(NULL), ts, sizeof(ts));
+
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_object(&trans, inst);
+    amxd_trans_set_value(uint32_t,  &trans, "RestartCount",    count + 1);
+    amxd_trans_set_value(cstring_t, &trans, "LastRestartTime", ts);
+    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
+    if (st != amxd_status_ok)
+        syslog(LOG_WARNING, "Failed to record restart for '%s' (status=%d)", name, st);
+    amxd_trans_clean(&trans);
+}
+
+void datamodel_sync_monitored_processes(
+        const char proc_names[][HGW_MAX_PROC_NAME], int proc_count) {
+    if (!s_dm) return;
+
+    amxd_object_t *mp_tmpl = amxd_dm_findf(s_dm, "HGWDoctor.MonitoredProcess.");
+    if (!mp_tmpl) return;
+
+    /* Collect indices of instances whose Name is no longer in the process list */
+    uint32_t del_indices[HGW_MAX_PROC_LIST];
+    int del_count = 0;
+    amxc_var_t val;
+    amxc_var_init(&val);
+
+    amxd_object_for_each(instance, it, mp_tmpl) {
+        amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+        bool keep = false;
+        if (amxd_object_get_param(inst, "Name", &val) == amxd_status_ok) {
+            const char *n = amxc_var_constcast(cstring_t, &val);
+            if (n) {
+                for (int i = 0; i < proc_count; i++) {
+                    if (strcmp(n, proc_names[i]) == 0) { keep = true; break; }
+                }
+            }
+        }
+        if (!keep && del_count < HGW_MAX_PROC_LIST)
+            del_indices[del_count++] = amxd_object_get_index(inst);
+    }
+    amxc_var_clean(&val);
+
+    if (del_count > 0) {
+        amxd_trans_t del_trans;
+        amxd_trans_init(&del_trans);
+        amxd_trans_set_attr(&del_trans, amxd_tattr_change_ro, true);
+        amxd_trans_select_object(&del_trans, mp_tmpl);
+        for (int i = 0; i < del_count; i++)
+            amxd_trans_del_inst(&del_trans, del_indices[i], NULL);
+        amxd_trans_apply(&del_trans, s_dm);
+        amxd_trans_clean(&del_trans);
+    }
+
+    /* Create instances for processes not yet in the table */
+    for (int i = 0; i < proc_count; i++) {
+        if (proc_names[i][0] == '\0' || mp_find_by_name(proc_names[i])) continue;
+
+        amxd_trans_t trans;
+        amxd_trans_init(&trans);
+        amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+        amxd_trans_select_object(&trans, mp_tmpl);
+        amxd_trans_add_inst(&trans, 0, NULL);
+        amxd_trans_set_value(cstring_t, &trans, "Name", proc_names[i]);
+        amxd_trans_apply(&trans, s_dm);
+        amxd_trans_clean(&trans);
+    }
+}
+
+/* -------------------------------------------------------------------------
  * RPC handlers (bound via ODL 'call' directives)
  * ------------------------------------------------------------------------- */
 
