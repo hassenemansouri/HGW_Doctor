@@ -347,10 +347,12 @@ static void apply_dm_config(const DmConfig *dmc) {
         (const char (*)[HGW_MAX_PROC_NAME]) proc_names, proc_count);
 
     RecoveryConfig rcfg2 = {0};
-    rcfg2.action_type   = action_str_to_type(effective.action_type);
-    rcfg2.process_count = proc_count;
+    rcfg2.action_type              = action_str_to_type(effective.action_type);
+    rcfg2.process_count            = proc_count;
     memcpy(rcfg2.process_names, proc_names, sizeof(rcfg2.process_names));
     strncpy(rcfg2.scripts_dir, s_scripts_dir, HGW_MAX_PATH - 1);
+    rcfg2.escalation_enabled       = datamodel_get_escalation_enabled();
+    rcfg2.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
     recovery_update_config(&rcfg2);
 
     if (effective.upload_url[0] != '\0')
@@ -685,10 +687,12 @@ int main(int argc, char *argv[]) {
         (const char (*)[HGW_MAX_PROC_NAME]) cfg.process_names, cfg.process_count);
 
     RecoveryConfig rcfg = {0};
-    rcfg.action_type   = cfg.action_type;
-    rcfg.process_count = cfg.process_count;
+    rcfg.action_type              = cfg.action_type;
+    rcfg.process_count            = cfg.process_count;
     memcpy(rcfg.process_names, cfg.process_names, sizeof(rcfg.process_names));
     strncpy(rcfg.scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
+    rcfg.escalation_enabled       = datamodel_get_escalation_enabled();
+    rcfg.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
     recovery_init(&rcfg, on_recovery_done, NULL);
 
     /* If we booted after a HGWDoctor-triggered reboot, record it in the
@@ -735,6 +739,7 @@ int main(int argc, char *argv[]) {
     time_t last_diag_collect = 0;
     time_t last_wd_pet       = 0;
     time_t last_cfg_poll     = 0;
+    time_t last_escl_check   = 0;
     int    s_dm_changed_delay = 0;  /* countdown before applying DM signal (loop iterations) */
 #define DIAG_COOLDOWN_S 60  /* min seconds between anomaly-triggered collections */
     while (g_running) {
@@ -757,10 +762,12 @@ int main(int argc, char *argv[]) {
             analyzer_update_config(&acfg);
 
             RecoveryConfig rcfg_hup = {0};
-            rcfg_hup.action_type   = cur->action_type;
-            rcfg_hup.process_count = cur->process_count;
+            rcfg_hup.action_type              = cur->action_type;
+            rcfg_hup.process_count            = cur->process_count;
             memcpy(rcfg_hup.process_names, cur->process_names, sizeof(rcfg_hup.process_names));
             strncpy(rcfg_hup.scripts_dir, cur->scripts_dir, HGW_MAX_PATH - 1);
+            rcfg_hup.escalation_enabled       = datamodel_get_escalation_enabled();
+            rcfg_hup.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
             recovery_update_config(&rcfg_hup);
 
             if (cur->diag_output_dir[0] != '\0')
@@ -878,23 +885,35 @@ int main(int argc, char *argv[]) {
 
             if (snap.recovery_valid) {
                 datamodel_record_action(&snap.recovery_result);
+
+                /* Capture escalation level BEFORE advancing (level used for this action) */
+                uint32_t esc_lvl = 0;
+                if (snap.recovery_event.process_name[0] != '\0')
+                    esc_lvl = escalation_get_level(snap.recovery_event.process_name);
+
                 uint32_t log_idx = datamodel_append_anomaly_log(
                     &snap.recovery_event,
                     action_type_to_string(snap.recovery_result.action),
-                    snap.recovery_result.result == RESULT_SUCCESS ? "Success" : "Failure"
+                    snap.recovery_result.result == RESULT_SUCCESS ? "Success" : "Failure",
+                    esc_lvl
                 );
                 if (snap.recovery_result.action == ACTION_PROCESS_RESTART &&
                     snap.recovery_result.result == RESULT_SUCCESS &&
                     snap.recovery_result.process_name[0] != '\0')
                     datamodel_record_process_restart(snap.recovery_result.process_name);
 
+                /* Advance escalation level for next action */
+                if (datamodel_get_escalation_enabled() &&
+                    snap.recovery_event.process_name[0] != '\0')
+                    escalation_advance(snap.recovery_event.process_name);
+
                 /* Start 30-second verification timer */
                 int vtype = (int)snap.recovery_event.type;
                 if (vtype > 0 && vtype < ANOMALY_TYPE_COUNT && log_idx > 0) {
-                    s_verify[vtype].active       = 1;
-                    s_verify[vtype].type         = snap.recovery_event.type;
-                    s_verify[vtype].log_index    = log_idx;
-                    s_verify[vtype].action_time  = time(NULL);
+                    s_verify[vtype].active        = 1;
+                    s_verify[vtype].type          = snap.recovery_event.type;
+                    s_verify[vtype].log_index     = log_idx;
+                    s_verify[vtype].action_time   = time(NULL);
                     s_verify[vtype].anomaly_start = snap.recovery_event.detected_at.tv_sec;
                     strncpy(s_verify[vtype].process_name,
                             snap.recovery_event.process_name, HGW_MAX_PROC_NAME - 1);
@@ -921,7 +940,8 @@ int main(int argc, char *argv[]) {
             datamodel_increment_anomaly_count();
             (void)datamodel_append_anomaly_log(&s_ondemand_event,
                 action_type_to_string(s_ondemand_result.action),
-                s_ondemand_result.result == RESULT_SUCCESS ? "Success" : "Failure");
+                s_ondemand_result.result == RESULT_SUCCESS ? "Success" : "Failure",
+                0);
             if (s_ondemand_result.action == ACTION_PROCESS_RESTART &&
                 s_ondemand_result.result == RESULT_SUCCESS &&
                 s_ondemand_result.process_name[0] != '\0')
@@ -1012,6 +1032,26 @@ int main(int argc, char *argv[]) {
             datamodel_update_uptime((uint32_t)(time(NULL) - start_time));
             datamodel_update_self_stats();
             datamodel_sync_counters();
+        }
+
+        /* Escalation reset check — every 60 s */
+        {
+            time_t now_escl = time(NULL);
+            if (now_escl - last_escl_check >= 60) {
+                last_escl_check = now_escl;
+                if (datamodel_get_escalation_enabled()) {
+                    char escl_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME] = {{0}};
+                    int  escl_count = 0;
+                    parse_process_list(s_last_applied_dmc.process_list,
+                                       escl_names, &escl_count);
+                    if (escl_count == 0) {
+                        memcpy(escl_names, s_fallback_proc_names, sizeof(escl_names));
+                        escl_count = s_fallback_proc_count;
+                    }
+                    for (int ei = 0; ei < escl_count; ei++)
+                        escalation_check_reset(escl_names[ei]);
+                }
+            }
         }
 
         /* Deferred reboot countdown — tick every 100ms iteration */

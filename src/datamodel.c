@@ -399,7 +399,8 @@ void datamodel_sync_counters(void) {
 
 uint32_t datamodel_append_anomaly_log(const AnomalyEvent *event,
                                       const char *action_taken,
-                                      const char *action_result) {
+                                      const char *action_result,
+                                      uint32_t escalation_level) {
     char timestamp[32];
 
     if (!s_dm || !event) return 0;
@@ -447,6 +448,7 @@ uint32_t datamodel_append_anomaly_log(const AnomalyEvent *event,
                          action_result ? action_result : RESULT_STR_NONE);
     amxd_trans_set_value(cstring_t, &trans, "RecoveryStatus", "Pending");
     amxd_trans_set_value(uint32_t,  &trans, "AnomalyDurationSeconds", 0);
+    amxd_trans_set_value(uint32_t,  &trans, "EscalationLevel", escalation_level);
 
     dm_apply_trans(&trans, TR181_ANOMALY_LOG);
     amxd_trans_clean(&trans);
@@ -1091,3 +1093,101 @@ bool datamodel_consume_on_demand_trigger(void) {
     return triggered;
 }
 
+/* -------------------------------------------------------------------------
+ * Escalation config readers
+ * ------------------------------------------------------------------------- */
+bool datamodel_get_escalation_enabled(void) {
+    if (!s_dm) return false;
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "HGWDoctor.");
+    if (!obj) return false;
+    amxc_var_t val;
+    amxc_var_init(&val);
+    bool result = true;
+    if (amxd_object_get_param(obj, "EscalationEnabled", &val) == amxd_status_ok)
+        result = amxc_var_dyncast(bool, &val);
+    amxc_var_clean(&val);
+    return result;
+}
+
+uint32_t datamodel_get_escalation_reset_minutes(void) {
+    return dm_read_uint32(TR181_ESCALATION_RESET_MINS);
+}
+
+/* -------------------------------------------------------------------------
+ * Per-process escalation state helpers
+ * ------------------------------------------------------------------------- */
+uint32_t datamodel_get_escalation_level(const char *process_name) {
+    amxd_object_t *inst = mp_find_by_name(process_name);
+    if (!inst) return 0;
+    amxc_var_t val;
+    amxc_var_init(&val);
+    uint32_t level = 0;
+    if (amxd_object_get_param(inst, "EscalationLevel", &val) == amxd_status_ok)
+        level = amxc_var_dyncast(uint32_t, &val);
+    amxc_var_clean(&val);
+    return level;
+}
+
+void datamodel_set_escalation_level(const char *process_name, uint32_t level) {
+    amxd_object_t *inst = mp_find_by_name(process_name);
+    if (!inst) return;
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_object(&trans, inst);
+    amxd_trans_set_value(uint32_t, &trans, "EscalationLevel", level);
+    amxd_trans_apply(&trans, s_dm);
+    amxd_trans_clean(&trans);
+}
+
+void datamodel_increment_escalation_count(const char *process_name) {
+    amxd_object_t *inst = mp_find_by_name(process_name);
+    if (!inst) return;
+    amxc_var_t val;
+    amxc_var_init(&val);
+    uint32_t count = 0;
+    if (amxd_object_get_param(inst, "EscalationCount", &val) == amxd_status_ok)
+        count = amxc_var_dyncast(uint32_t, &val);
+    amxc_var_clean(&val);
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_object(&trans, inst);
+    amxd_trans_set_value(uint32_t, &trans, "EscalationCount", count + 1);
+    amxd_trans_apply(&trans, s_dm);
+    amxd_trans_clean(&trans);
+}
+
+void datamodel_set_last_escalation_time(const char *process_name) {
+    amxd_object_t *inst = mp_find_by_name(process_name);
+    if (!inst) return;
+    char ts[32];
+    dm_format_utc(time(NULL), ts, sizeof(ts));
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_object(&trans, inst);
+    amxd_trans_set_value(cstring_t, &trans, "LastEscalationTime", ts);
+    amxd_trans_apply(&trans, s_dm);
+    amxd_trans_clean(&trans);
+}
+
+time_t datamodel_get_last_escalation_timestamp(const char *process_name) {
+    amxd_object_t *inst = mp_find_by_name(process_name);
+    if (!inst) return 0;
+    amxc_var_t val;
+    amxc_var_init(&val);
+    char ts[32] = {0};
+    if (amxd_object_get_param(inst, "LastEscalationTime", &val) == amxd_status_ok) {
+        const char *s = amxc_var_constcast(cstring_t, &val);
+        if (s) strncpy(ts, s, sizeof(ts) - 1);
+    }
+    amxc_var_clean(&val);
+    if (ts[0] == '\0') return 0;
+    int y, mo, d, h, mi, sec;
+    struct tm tm_v = {0};
+    if (sscanf(ts, "%d-%d-%dT%d:%d:%dZ", &y, &mo, &d, &h, &mi, &sec) != 6) return 0;
+    tm_v.tm_year = y - 1900; tm_v.tm_mon = mo - 1; tm_v.tm_mday = d;
+    tm_v.tm_hour = h;        tm_v.tm_min  = mi;     tm_v.tm_sec  = sec;
+    return timegm(&tm_v);
+}

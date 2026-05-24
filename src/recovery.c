@@ -10,6 +10,7 @@
 
 #include "logger.h"
 #include "recovery.h"
+#include "datamodel.h"
 
 #define RECOVERY_MAX_CONCURRENT  4
 #define REBOOT_UPTIME_MIN_S      60
@@ -29,11 +30,24 @@ static time_t          s_reboot_ring[REBOOT_RING_SIZE] = {0};
 static int             s_reboot_ring_count = 0;
 static pthread_mutex_t s_reboot_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Per-process escalation state — in-memory authoritative source for dispatch
+ * (main thread writes via escalation_advance/check_reset; analyzer thread
+ *  reads via escalation_get_level, both under s_escl_mutex). */
+typedef struct {
+    char     process_name[HGW_MAX_PROC_NAME];
+    uint32_t level;
+    time_t   last_time;
+    bool     used;
+} EscalationEntry;
+static EscalationEntry s_escl[HGW_MAX_PROC_LIST];
+static pthread_mutex_t s_escl_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 typedef struct {
     AnomalyEvent      event;
     RecoveryConfig    cfg;
     recovery_callback callback;
     void             *userdata;
+    bool              use_escalated_action; /* bypass normal action-select logic */
 } RecoveryTask;
 
 static void copy_string(char *dst, size_t dst_size, const char *src) {
@@ -160,14 +174,19 @@ static void *recovery_run(void *arg) {
     RecoveryResult  result = {0};
 
     ActionType action;
-    if (event->type == ANOMALY_PROCESS ||
-        event->type == ANOMALY_PROCESS_CPU ||
-        event->type == ANOMALY_PROCESS_MEM)
-        action = ACTION_PROCESS_RESTART;
-    else if (event->type == ANOMALY_CPU || event->type == ANOMALY_MEMORY)
-        action = (task->cfg.action_type == ACTION_PROCESS_RESTART) ? ACTION_CACHE_CLEAR : task->cfg.action_type;
-    else
+    if (task->use_escalated_action) {
+        /* Escalation chain explicitly set the action — use it verbatim */
         action = task->cfg.action_type;
+    } else if (event->type == ANOMALY_PROCESS ||
+               event->type == ANOMALY_PROCESS_CPU ||
+               event->type == ANOMALY_PROCESS_MEM) {
+        action = ACTION_PROCESS_RESTART;
+    } else if (event->type == ANOMALY_CPU || event->type == ANOMALY_MEMORY) {
+        action = (task->cfg.action_type == ACTION_PROCESS_RESTART)
+               ? ACTION_CACHE_CLEAR : task->cfg.action_type;
+    } else {
+        action = task->cfg.action_type;
+    }
     result.action = action;
     result.result = RESULT_NONE;
     result.exit_code = 0;
@@ -378,10 +397,26 @@ int recovery_dispatch(const AnomalyEvent *event) {
     }
 
     task->event = *event;
+    task->use_escalated_action = false;
     pthread_mutex_lock(&s_cfg_mutex);
     task->cfg      = s_cfg;
     task->callback = s_callback;
     task->userdata = s_userdata;
+    /* Escalation: override action_type with escalated action when enabled */
+    if (s_cfg.escalation_enabled) {
+        pthread_mutex_lock(&s_escl_mutex);
+        uint32_t level = 0;
+        for (int i = 0; i < HGW_MAX_PROC_LIST; i++) {
+            if (s_escl[i].used &&
+                strcmp(s_escl[i].process_name, event->process_name) == 0) {
+                level = s_escl[i].level;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&s_escl_mutex);
+        task->cfg.action_type    = get_escalated_action(event->process_name, level);
+        task->use_escalated_action = true;
+    }
     pthread_mutex_unlock(&s_cfg_mutex);
 
     pthread_t t;
@@ -401,13 +436,15 @@ int recovery_dispatch(const AnomalyEvent *event) {
 void recovery_update_config(const RecoveryConfig *cfg) {
     if (!cfg) return;
     pthread_mutex_lock(&s_cfg_mutex);
-    s_cfg.action_type   = cfg->action_type;
-    s_cfg.process_count = cfg->process_count;
+    s_cfg.action_type             = cfg->action_type;
+    s_cfg.process_count           = cfg->process_count;
     memcpy(s_cfg.process_names, cfg->process_names, sizeof(s_cfg.process_names));
+    s_cfg.escalation_enabled      = cfg->escalation_enabled;
+    s_cfg.escalation_reset_minutes = cfg->escalation_reset_minutes;
     /* scripts_dir is host-side config, not exposed via DM — leave unchanged */
     pthread_mutex_unlock(&s_cfg_mutex);
-    LOG_INFO("Recovery config updated: action=%d processes=%d",
-             cfg->action_type, cfg->process_count);
+    LOG_INFO("Recovery config updated: action=%d processes=%d escalation=%d",
+             cfg->action_type, cfg->process_count, cfg->escalation_enabled);
 }
 
 void recovery_cleanup(void) {
@@ -418,4 +455,106 @@ void recovery_cleanup(void) {
     s_callback = NULL;
     s_userdata = NULL;
     pthread_mutex_destroy(&s_cfg_mutex);
+    pthread_mutex_destroy(&s_escl_mutex);
+}
+
+/* -------------------------------------------------------------------------
+ * Escalation chain
+ * ------------------------------------------------------------------------- */
+
+ActionType get_escalated_action(const char *process_name, uint32_t current_level) {
+    (void)process_name;
+    switch (current_level) {
+        case 0:  return ACTION_CACHE_CLEAR;
+        case 1:  return ACTION_PROCESS_RESTART;
+        case 2:  return ACTION_REBOOT;
+        default: return ACTION_REBOOT;
+    }
+}
+
+/* Thread-safe read of in-memory escalation level (called from analyzer thread). */
+uint32_t escalation_get_level(const char *process_name) {
+    if (!process_name || process_name[0] == '\0') return 0;
+    uint32_t level = 0;
+    pthread_mutex_lock(&s_escl_mutex);
+    for (int i = 0; i < HGW_MAX_PROC_LIST; i++) {
+        if (s_escl[i].used &&
+            strcmp(s_escl[i].process_name, process_name) == 0) {
+            level = s_escl[i].level;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s_escl_mutex);
+    return level;
+}
+
+/* Advance escalation level after a recovery action (main thread only). */
+void escalation_advance(const char *process_name) {
+    if (!process_name || process_name[0] == '\0') return;
+
+    pthread_mutex_lock(&s_escl_mutex);
+    int slot = -1;
+    for (int i = 0; i < HGW_MAX_PROC_LIST; i++) {
+        if (s_escl[i].used &&
+            strcmp(s_escl[i].process_name, process_name) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < HGW_MAX_PROC_LIST; i++) {
+            if (!s_escl[i].used) {
+                slot = i;
+                strncpy(s_escl[i].process_name, process_name, HGW_MAX_PROC_NAME - 1);
+                s_escl[i].process_name[HGW_MAX_PROC_NAME - 1] = '\0';
+                s_escl[i].level    = 0;
+                s_escl[i].last_time = 0;
+                s_escl[i].used     = true;
+                break;
+            }
+        }
+    }
+    if (slot >= 0 && s_escl[slot].level < 2) {
+        s_escl[slot].level++;
+        s_escl[slot].last_time = time(NULL);
+    }
+    pthread_mutex_unlock(&s_escl_mutex);
+
+    /* Mirror new state to data model (main thread — DM access is safe here) */
+    datamodel_set_escalation_level(process_name,
+                                   escalation_get_level(process_name));
+    datamodel_increment_escalation_count(process_name);
+    datamodel_set_last_escalation_time(process_name);
+    LOG_INFO("Escalation advanced for %s: level=%u",
+             process_name, escalation_get_level(process_name));
+}
+
+/* Check whether escalation should reset due to a clean period (main thread). */
+void escalation_check_reset(const char *process_name) {
+    if (!process_name || process_name[0] == '\0') return;
+
+    uint32_t reset_mins = datamodel_get_escalation_reset_minutes();
+    if (reset_mins == 0) return;
+
+    pthread_mutex_lock(&s_escl_mutex);
+    int slot = -1;
+    for (int i = 0; i < HGW_MAX_PROC_LIST; i++) {
+        if (s_escl[i].used &&
+            strcmp(s_escl[i].process_name, process_name) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    bool do_reset = false;
+    if (slot >= 0 && s_escl[slot].level > 0 && s_escl[slot].last_time > 0 &&
+        time(NULL) - s_escl[slot].last_time >= (time_t)(reset_mins * 60)) {
+        s_escl[slot].level = 0;
+        do_reset = true;
+    }
+    pthread_mutex_unlock(&s_escl_mutex);
+
+    if (do_reset) {
+        datamodel_set_escalation_level(process_name, 0);
+        LOG_INFO("Escalation reset for %s after %u min clean", process_name, reset_mins);
+    }
 }

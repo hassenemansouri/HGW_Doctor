@@ -42,10 +42,22 @@ void datamodel_record_upload(UploadStatus status, const char *archive_path);
 void datamodel_increment_anomaly_count(void);
 uint32_t datamodel_append_anomaly_log(const AnomalyEvent *event,
                                       const char *action_taken,
-                                      const char *action_result);
+                                      const char *action_result,
+                                      uint32_t escalation_level);
 void datamodel_update_anomaly_recovery_status(uint32_t log_index,
                                               const char *recovery_status,
                                               uint32_t duration_s);
+
+/* Escalation config readers (main thread only) */
+bool     datamodel_get_escalation_enabled(void);
+uint32_t datamodel_get_escalation_reset_minutes(void);
+
+/* Per-process escalation state (main thread only) */
+uint32_t datamodel_get_escalation_level(const char *process_name);
+void     datamodel_set_escalation_level(const char *process_name, uint32_t level);
+void     datamodel_increment_escalation_count(const char *process_name);
+void     datamodel_set_last_escalation_time(const char *process_name);
+time_t   datamodel_get_last_escalation_timestamp(const char *process_name);
 void datamodel_update_uptime(uint32_t uptime_s);
 void datamodel_update_self_stats(void);
 void datamodel_reset_on_demand_trigger(void);

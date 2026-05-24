@@ -9,6 +9,8 @@ typedef struct {
     char       process_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
     int        process_count;
     char       scripts_dir[HGW_MAX_PATH];
+    bool       escalation_enabled;
+    uint32_t   escalation_reset_minutes;
 } RecoveryConfig;
 
 typedef void (*recovery_callback)(const RecoveryResult *result, void *userdata);
@@ -25,6 +27,12 @@ int  recovery_dispatch_ondemand(ActionType action,
                                  const char *scripts_dir,
                                  recovery_callback cb,
                                  void *userdata);
+
+/* Escalation chain */
+ActionType get_escalated_action(const char *process_name, uint32_t current_level);
+uint32_t   escalation_get_level(const char *process_name);
+void       escalation_advance(const char *process_name);
+void       escalation_check_reset(const char *process_name);
 
 /* Deferred reboot helpers */
 typedef enum {

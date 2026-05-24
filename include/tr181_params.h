@@ -69,7 +69,11 @@
 #define TR181_ANOMALY_LOG         TR181_ROOT ".AnomalyLog"
 
 /* ── MonitoredProcess table ──────────────────────────────────────────────── */
-#define TR181_MONITORED_PROCESS   TR181_ROOT ".MonitoredProcess"
+#define TR181_MONITORED_PROCESS       TR181_ROOT ".MonitoredProcess"
+
+/* ── Escalation config (HGWDoctor object) ────────────────────────────────── */
+#define TR181_ESCALATION_ENABLED      TR181_ROOT ".EscalationEnabled"
+#define TR181_ESCALATION_RESET_MINS   TR181_ROOT ".EscalationResetMinutes"
 
 /* ── String values for ActionType parameter ─────────────────────────────── */
 #define ACTSTR_NONE               "None"

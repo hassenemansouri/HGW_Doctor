@@ -42,6 +42,8 @@ import "hgw_doctor.so" as "hgw_doctor";
          * Writing a non-None value triggers an immediate on-demand action
          * and resets ActionType back to "None" automatically. */
         %persistent string ActionType = "None";
+        %persistent bool EscalationEnabled = true;
+        %persistent uint32 EscalationResetMinutes = 60;
         %persistent string ProcessList = "";
         %persistent string OnDemandTarget = "";  /* specific target for on-demand ProcessRestart */
         %persistent uint32 RebootDelaySec = 10;
@@ -101,6 +103,7 @@ import "hgw_doctor.so" as "hgw_doctor";
             %read-only string ActionResult = "";
             %read-only string RecoveryStatus = "";      /* Resolved / Unresolved / Pending */
             %read-only uint32 AnomalyDurationSeconds = 0;
+            %read-only uint32 EscalationLevel = 0;      /* escalation level at time of action */
         }
 
         /* Per-process monitoring table — path: HGWDoctor.MonitoredProcess.{i}. */
@@ -115,6 +118,9 @@ import "hgw_doctor.so" as "hgw_doctor";
             %persistent %read-only uint32 PID         = 0;
             %persistent %read-only uint32 RestartCount    = 0;
             %persistent %read-only string LastRestartTime = "";
+            %persistent %read-only uint32 EscalationLevel = 0;
+            %persistent %read-only uint32 EscalationCount = 0;
+            %persistent %read-only string LastEscalationTime = "";
         }
 
         /* RPC methods */
