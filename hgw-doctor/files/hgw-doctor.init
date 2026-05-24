@@ -12,6 +12,26 @@ PIDFILE=/var/run/hgw-doctor.pid
 
 start_service() {
     mkdir -p /etc/amx/hgw_doctor/persist
+
+    # Ensure caps ODL exists (may be missing due to overlayfs)
+    if [ ! -f /etc/amx/hgw_doctor/hgw_doctor_caps.odl ]; then
+        cat > /etc/amx/hgw_doctor/hgw_doctor_caps.odl << 'CAPSEOF'
+%config {
+    ubus-path         = "HGWDoctor";
+    register-name     = "hgw-doctor";
+    event-throttle-ms = 1000;
+    anomaly-log-max-entries = 50;
+    diag-archive-max-files  = 10;
+    upload-timeout-s     = 30;
+    upload-max-retries   = 3;
+    upload-retry-delay-s = 5;
+    upload-tls-verify    = true;
+    upload-ca-cert-path  = "/etc/ssl/certs/ca-certificates.crt";
+}
+CAPSEOF
+        logger -t hgw-doctor "Created missing hgw_doctor_caps.odl"
+    fi
+
     procd_open_instance hgw-doctor
     procd_set_param command "$PROG" "$CONFIG"
     procd_set_param respawn 3600 5 5
