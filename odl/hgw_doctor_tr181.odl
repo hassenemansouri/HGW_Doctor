@@ -73,9 +73,7 @@
             %read-only string LastActionType = "";
             %read-only datetime LastActionTime = "0001-01-01T00:00:00Z";
             %read-only string LastActionStatus = "None";
-            %read-only uint32 AnomalyCount = 0 {
-                userflags = 1;  /* active notification flag for cwmp_plugin */
-            }
+            %read-only %notify uint32 AnomalyCount = 0;
             %read-only string DiagArchivePath = "";
             %read-only string UploadStatus = "None";
             %read-only datetime UploadTimestamp = "0001-01-01T00:00:00Z";
