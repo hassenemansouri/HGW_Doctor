@@ -414,7 +414,12 @@ int recovery_dispatch(const AnomalyEvent *event) {
             }
         }
         pthread_mutex_unlock(&s_escl_mutex);
-        task->cfg.action_type    = get_escalated_action(event->process_name, level);
+        task->cfg.action_type = get_escalated_action(event->process_name, level);
+        /* A dead process must be restarted — cache clear cannot revive it */
+        if (event->type == ANOMALY_PROCESS &&
+            task->cfg.action_type == ACTION_CACHE_CLEAR) {
+            task->cfg.action_type = ACTION_PROCESS_RESTART;
+        }
         task->use_escalated_action = true;
     }
     pthread_mutex_unlock(&s_cfg_mutex);
