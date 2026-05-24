@@ -54,7 +54,7 @@ import "hgw_doctor.so" as "hgw_doctor";
         %read-only string LastActionType = "";
         %read-only datetime LastActionTime = "0001-01-01T00:00:00Z";
         %read-only string LastActionStatus = "None";
-        %persistent %read-only %notify uint32 AnomalyCount = 0;
+        %persistent %read-only uint32 AnomalyCount = 0;
 
         /* Diagnostics & upload */
         bool OnDemandTrigger = false;
