@@ -99,6 +99,8 @@ import "hgw_doctor.so" as "hgw_doctor";
             %read-only string ProcessName = "";
             %read-only string ActionTaken = "";
             %read-only string ActionResult = "";
+            %read-only string RecoveryStatus = "";      /* Resolved / Unresolved / Pending */
+            %read-only uint32 AnomalyDurationSeconds = 0;
         }
 
         /* Per-process monitoring table — path: HGWDoctor.MonitoredProcess.{i}. */

@@ -264,6 +264,8 @@ static void datamodel_finalize_reboot_on_boot(void) {
     amxd_trans_set_value(cstring_t, &trans, "ProcessName", "");
     amxd_trans_set_value(cstring_t, &trans, "ActionTaken", "Reboot");
     amxd_trans_set_value(cstring_t, &trans, "ActionResult", "Success");
+    amxd_trans_set_value(cstring_t, &trans, "RecoveryStatus", "Resolved");
+    amxd_trans_set_value(uint32_t,  &trans, "AnomalyDurationSeconds", 0);
     amxd_trans_apply(&trans, s_dm);
     amxd_trans_clean(&trans);
 
@@ -395,12 +397,12 @@ void datamodel_sync_counters(void) {
     dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, atomic_load(&s_total_uploads));
 }
 
-void datamodel_append_anomaly_log(const AnomalyEvent *event,
-                                  const char *action_taken,
-                                  const char *action_result) {
+uint32_t datamodel_append_anomaly_log(const AnomalyEvent *event,
+                                      const char *action_taken,
+                                      const char *action_result) {
     char timestamp[32];
 
-    if (!s_dm || !event) return;
+    if (!s_dm || !event) return 0;
 
     /* Enforce HGW_ANOMALY_LOG_MAX cap — delete oldest instance when full */
     amxd_object_t *log_obj = amxd_dm_findf(s_dm, "%s", TR181_ANOMALY_LOG);
@@ -443,8 +445,45 @@ void datamodel_append_anomaly_log(const AnomalyEvent *event,
                          action_taken ? action_taken : ACTSTR_NONE);
     amxd_trans_set_value(cstring_t, &trans, "ActionResult",
                          action_result ? action_result : RESULT_STR_NONE);
+    amxd_trans_set_value(cstring_t, &trans, "RecoveryStatus", "Pending");
+    amxd_trans_set_value(uint32_t,  &trans, "AnomalyDurationSeconds", 0);
 
     dm_apply_trans(&trans, TR181_ANOMALY_LOG);
+    amxd_trans_clean(&trans);
+
+    /* Return the index of the newly created instance (highest index in template) */
+    uint32_t new_idx = 0;
+    if (log_obj) {
+        amxd_object_for_each(instance, it2, log_obj) {
+            amxd_object_t *inst2 = amxc_container_of(it2, amxd_object_t, it);
+            uint32_t idx = amxd_object_get_index(inst2);
+            if (idx > new_idx) new_idx = idx;
+        }
+    }
+    return new_idx;
+}
+
+void datamodel_update_anomaly_recovery_status(uint32_t log_index,
+                                              const char *recovery_status,
+                                              uint32_t duration_s) {
+    if (!s_dm || !recovery_status || log_index == 0) return;
+
+    amxd_object_t *inst = amxd_dm_findf(s_dm, "HGWDoctor.AnomalyLog.%u.", log_index);
+    if (!inst) {
+        syslog(LOG_WARNING, "update_recovery_status: AnomalyLog.%u not found", log_index);
+        return;
+    }
+
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_object(&trans, inst);
+    amxd_trans_set_value(cstring_t, &trans, "RecoveryStatus",        recovery_status);
+    amxd_trans_set_value(uint32_t,  &trans, "AnomalyDurationSeconds", duration_s);
+    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
+    if (st != amxd_status_ok)
+        syslog(LOG_WARNING, "Failed to update RecoveryStatus for AnomalyLog.%u (st=%d)",
+               log_index, st);
     amxd_trans_clean(&trans);
 }
 
@@ -987,6 +1026,8 @@ void datamodel_append_ondemand_log(const char *action_taken,
                          action_taken  ? action_taken  : "");
     amxd_trans_set_value(cstring_t, &trans, "ActionResult",
                          action_result ? action_result : "None");
+    amxd_trans_set_value(cstring_t, &trans, "RecoveryStatus", "");
+    amxd_trans_set_value(uint32_t,  &trans, "AnomalyDurationSeconds", 0);
     dm_apply_trans(&trans, TR181_ANOMALY_LOG);
     amxd_trans_clean(&trans);
 }

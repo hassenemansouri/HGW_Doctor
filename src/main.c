@@ -55,6 +55,19 @@ static int                   s_reboot_ticks      = 0;  /* 100ms ticks until rebo
  * Accessed only from on_anomaly(), which is called serially by the analyzer thread. */
 static time_t s_last_recovery[6] = {0};
 
+#define ANOMALY_TYPE_COUNT 7   /* ANOMALY_NONE … ANOMALY_ON_DEMAND */
+#define VERIFY_DELAY_S     30  /* seconds after recovery action to re-check metric */
+
+typedef struct {
+    int         active;
+    AnomalyType type;
+    uint32_t    log_index;
+    time_t      action_time;
+    time_t      anomaly_start;
+    char        process_name[HGW_MAX_PROC_NAME];
+} VerificationPending;
+static VerificationPending s_verify[ANOMALY_TYPE_COUNT];
+
 static int g_wd_fd = -1;
 
 static amxd_dm_t        g_dm;
@@ -865,7 +878,7 @@ int main(int argc, char *argv[]) {
 
             if (snap.recovery_valid) {
                 datamodel_record_action(&snap.recovery_result);
-                datamodel_append_anomaly_log(
+                uint32_t log_idx = datamodel_append_anomaly_log(
                     &snap.recovery_event,
                     action_type_to_string(snap.recovery_result.action),
                     snap.recovery_result.result == RESULT_SUCCESS ? "Success" : "Failure"
@@ -874,6 +887,19 @@ int main(int argc, char *argv[]) {
                     snap.recovery_result.result == RESULT_SUCCESS &&
                     snap.recovery_result.process_name[0] != '\0')
                     datamodel_record_process_restart(snap.recovery_result.process_name);
+
+                /* Start 30-second verification timer */
+                int vtype = (int)snap.recovery_event.type;
+                if (vtype > 0 && vtype < ANOMALY_TYPE_COUNT && log_idx > 0) {
+                    s_verify[vtype].active       = 1;
+                    s_verify[vtype].type         = snap.recovery_event.type;
+                    s_verify[vtype].log_index    = log_idx;
+                    s_verify[vtype].action_time  = time(NULL);
+                    s_verify[vtype].anomaly_start = snap.recovery_event.detected_at.tv_sec;
+                    strncpy(s_verify[vtype].process_name,
+                            snap.recovery_event.process_name, HGW_MAX_PROC_NAME - 1);
+                    s_verify[vtype].process_name[HGW_MAX_PROC_NAME - 1] = '\0';
+                }
             }
             if (snap.upload_valid)
                 datamodel_record_upload(snap.upload_status, snap.upload_path);
@@ -893,13 +919,76 @@ int main(int argc, char *argv[]) {
             datamodel_set_action_type("None");
             datamodel_record_action(&s_ondemand_result);
             datamodel_increment_anomaly_count();
-            datamodel_append_anomaly_log(&s_ondemand_event,
+            (void)datamodel_append_anomaly_log(&s_ondemand_event,
                 action_type_to_string(s_ondemand_result.action),
                 s_ondemand_result.result == RESULT_SUCCESS ? "Success" : "Failure");
             if (s_ondemand_result.action == ACTION_PROCESS_RESTART &&
                 s_ondemand_result.result == RESULT_SUCCESS &&
                 s_ondemand_result.process_name[0] != '\0')
                 datamodel_record_process_restart(s_ondemand_result.process_name);
+        }
+
+        /* Recovery verification: 30 s after each action, re-check metric */
+        {
+            time_t now_v = time(NULL);
+            for (int vi = 0; vi < ANOMALY_TYPE_COUNT; vi++) {
+                if (!s_verify[vi].active) continue;
+                if (now_v - s_verify[vi].action_time < VERIFY_DELAY_S) continue;
+
+                s_verify[vi].active = 0;
+                uint32_t duration = (uint32_t)(now_v - s_verify[vi].anomaly_start);
+                const char *vstatus = "Resolved";
+
+                MetricSnapshot vsnap;
+                if (monitor_peek_latest(&vsnap)) {
+                    float current = 0.0f;
+                    float thresh  = 100.0f;
+
+                    switch (s_verify[vi].type) {
+                        case ANOMALY_CPU:
+                            current = (float)vsnap.sys_cpu_pct;
+                            thresh  = (float)s_last_applied_dmc.cpu_threshold_pct;
+                            break;
+                        case ANOMALY_MEMORY:
+                            current = (float)vsnap.sys_mem_pct;
+                            thresh  = (float)s_last_applied_dmc.mem_threshold_pct;
+                            break;
+                        case ANOMALY_PROCESS:
+                        case ANOMALY_PROCESS_CPU:
+                            for (int pi = 0; pi < vsnap.proc_count; pi++) {
+                                if (strcmp(vsnap.procs[pi].name,
+                                           s_verify[vi].process_name) == 0) {
+                                    current = vsnap.procs[pi].alive
+                                            ? (float)vsnap.procs[pi].cpu_pct : 100.0f;
+                                    thresh  = (float)s_last_applied_dmc.cpu_threshold_pct;
+                                    break;
+                                }
+                            }
+                            break;
+                        case ANOMALY_PROCESS_MEM:
+                            for (int pi = 0; pi < vsnap.proc_count; pi++) {
+                                if (strcmp(vsnap.procs[pi].name,
+                                           s_verify[vi].process_name) == 0) {
+                                    current = vsnap.procs[pi].alive
+                                            ? (float)vsnap.procs[pi].mem_pct : 100.0f;
+                                    thresh  = (float)s_last_applied_dmc.mem_threshold_pct;
+                                    break;
+                                }
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+
+                    if (current >= thresh)
+                        vstatus = "Unresolved";
+                }
+
+                datamodel_update_anomaly_recovery_status(
+                    s_verify[vi].log_index, vstatus, duration);
+                LOG_INFO("Verify [type=%d]: %s (duration=%us)",
+                         s_verify[vi].type, vstatus, duration);
+            }
         }
 
         /* Update data model stats at poll_interval_s cadence, not every 100ms */

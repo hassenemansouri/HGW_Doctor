@@ -106,6 +106,8 @@
                 %read-only string ProcessName = "";
                 %read-only string ActionTaken = "";
                 %read-only string ActionResult = "";
+                %read-only string RecoveryStatus = "";
+                %read-only uint32 AnomalyDurationSeconds = 0;
             }
 
             /* ── RPCs (same C handlers as HGWDoctor) ───────────────────── */

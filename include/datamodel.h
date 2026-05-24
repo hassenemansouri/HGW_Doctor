@@ -40,9 +40,12 @@ void datamodel_update_stats(uint32_t cpu_pct, uint32_t mem_pct,
 void datamodel_record_action(const RecoveryResult *result);
 void datamodel_record_upload(UploadStatus status, const char *archive_path);
 void datamodel_increment_anomaly_count(void);
-void datamodel_append_anomaly_log(const AnomalyEvent *event,
-                                  const char *action_taken,
-                                  const char *action_result);
+uint32_t datamodel_append_anomaly_log(const AnomalyEvent *event,
+                                      const char *action_taken,
+                                      const char *action_result);
+void datamodel_update_anomaly_recovery_status(uint32_t log_index,
+                                              const char *recovery_status,
+                                              uint32_t duration_s);
 void datamodel_update_uptime(uint32_t uptime_s);
 void datamodel_update_self_stats(void);
 void datamodel_reset_on_demand_trigger(void);
