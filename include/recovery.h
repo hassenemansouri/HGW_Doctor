@@ -34,6 +34,9 @@ uint32_t   escalation_get_level(const char *process_name);
 void       escalation_advance(const char *process_name);
 void       escalation_check_reset(const char *process_name);
 
+/* Reset all per-process escalation levels and cooldown timestamps to zero */
+void recovery_reset_cooldowns(void);
+
 /* Deferred reboot helpers */
 typedef enum {
     REBOOT_GUARD_OK             = 0,

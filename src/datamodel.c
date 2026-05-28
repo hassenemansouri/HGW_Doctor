@@ -31,6 +31,7 @@
 #include <amxo/amxo.h>
 
 #include "datamodel.h"
+#include "recovery.h"
 #include "tr181_params.h"
 #include "types.h"
 
@@ -798,6 +799,7 @@ amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
         }
     }
 
+    recovery_reset_cooldowns();
     syslog(LOG_INFO, "Counters reset via RPC");
     return amxd_status_ok;
 }
