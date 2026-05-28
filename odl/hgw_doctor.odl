@@ -124,6 +124,7 @@ import "hgw_doctor.so" as "hgw_doctor";
         /* RPC methods */
         uint32 TriggerDiagnostics() <!import:hgw_doctor:dm_trigger_diagnostics!>;
         void ResetCounters() <!import:hgw_doctor:dm_reset_counters!>;
+        void ResetEscalation() <!import:hgw_doctor:dm_reset_escalation!>;
         int32 SetProfile(%in string ProfileName) <!import:hgw_doctor:dm_set_profile!>;
     }
 }

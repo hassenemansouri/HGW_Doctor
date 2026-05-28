@@ -537,10 +537,8 @@ void escalation_advance(const char *process_name) {
 /* Reset all escalation levels and cooldown timestamps — used by ResetCounters RPC. */
 void recovery_reset_cooldowns(void) {
     pthread_mutex_lock(&s_escl_mutex);
-    for (int i = 0; i < HGW_MAX_PROC_LIST; i++) {
-        s_escl[i].level     = 0;
+    for (int i = 0; i < HGW_MAX_PROC_LIST; i++)
         s_escl[i].last_time = 0;
-    }
     pthread_mutex_unlock(&s_escl_mutex);
 
     pthread_mutex_lock(&s_reboot_ring_mutex);
@@ -549,6 +547,18 @@ void recovery_reset_cooldowns(void) {
     pthread_mutex_unlock(&s_reboot_ring_mutex);
 
     LOG_INFO("Recovery cooldowns reset via RPC");
+}
+
+/* Reset escalation levels — used by ResetEscalation() RPC only. */
+void recovery_reset_escalation(void) {
+    pthread_mutex_lock(&s_escl_mutex);
+    for (int i = 0; i < HGW_MAX_PROC_LIST; i++) {
+        s_escl[i].level     = 0;
+        s_escl[i].last_time = 0;
+    }
+    pthread_mutex_unlock(&s_escl_mutex);
+
+    LOG_INFO("Escalation state reset via RPC");
 }
 
 /* Check whether escalation should reset due to a clean period (main thread). */

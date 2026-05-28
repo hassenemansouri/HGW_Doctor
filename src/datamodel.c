@@ -769,11 +769,10 @@ amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
                                  amxc_var_t *args, amxc_var_t *ret) {
     (void)obj; (void)fn; (void)args; (void)ret;
     atomic_store(&s_anomaly_count, 0);
-    atomic_store(&s_total_actions, 0);
-    atomic_store(&s_total_uploads, 0);
-    dm_set_uint32(TR181_ANOMALY_COUNT,      0);
-    dm_set_uint32(TR181_STAT_TOTAL_ACTIONS, 0);
-    dm_set_uint32(TR181_STAT_TOTAL_UPLOADS, 0);
+    dm_set_uint32(TR181_ANOMALY_COUNT,        0);
+    dm_set_string(TR181_LAST_ACTION_TYPE,     "");
+    dm_set_string(TR181_LAST_ACTION_STATUS,   RESULT_STR_NONE);
+    dm_set_string(TR181_LAST_ACTION_TIME,     "0001-01-01T00:00:00Z");
 
     /* Clear all AnomalyLog instances — collect indices first, then delete */
     if (s_dm) {
@@ -801,6 +800,34 @@ amxd_status_t dm_reset_counters(amxd_object_t *obj, amxd_function_t *fn,
 
     recovery_reset_cooldowns();
     syslog(LOG_INFO, "Counters reset via RPC");
+    return amxd_status_ok;
+}
+
+amxd_status_t dm_reset_escalation(amxd_object_t *obj, amxd_function_t *fn,
+                                    amxc_var_t *args, amxc_var_t *ret) {
+    (void)obj; (void)fn; (void)args; (void)ret;
+
+    /* Reset DM escalation fields on every MonitoredProcess instance */
+    if (s_dm) {
+        amxd_object_t *mp_tmpl = amxd_dm_findf(s_dm, "HGWDoctor.MonitoredProcess.");
+        if (mp_tmpl) {
+            amxd_object_for_each(instance, it, mp_tmpl) {
+                amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
+                amxd_trans_t trans;
+                amxd_trans_init(&trans);
+                amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+                amxd_trans_select_object(&trans, inst);
+                amxd_trans_set_value(uint32_t,  &trans, "EscalationLevel",    0);
+                amxd_trans_set_value(uint32_t,  &trans, "EscalationCount",    0);
+                amxd_trans_set_value(cstring_t, &trans, "LastEscalationTime", "");
+                amxd_trans_apply(&trans, s_dm);
+                amxd_trans_clean(&trans);
+            }
+        }
+    }
+
+    recovery_reset_escalation();
+    syslog(LOG_INFO, "Escalation state reset via RPC");
     return amxd_status_ok;
 }
 
