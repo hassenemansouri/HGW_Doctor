@@ -1046,15 +1046,13 @@ int main(int argc, char *argv[]) {
             s_reboot_ticks--;
             if (s_reboot_ticks == 0) {
                 LOG_INFO("Reboot countdown complete — executing reboot");
-                /* Write flag file on persistent storage so next boot knows
-                 * this was a HGWDoctor-triggered reboot. */
-                FILE *rf = fopen(HGW_REBOOT_PENDING_FILE, "w");
-                if (rf) fclose(rf);
+                /* Mark in the persistent DM so next boot detects this reboot */
+                datamodel_set_pending_reboot(true);
                 watchdog_close();
                 recovery_do_reboot(s_scripts_dir);
                 /* Should not reach here; clear pending state if reboot fails */
                 LOG_WARN("Reboot command returned unexpectedly — clearing pending state");
-                unlink(HGW_REBOOT_PENDING_FILE);
+                datamodel_set_pending_reboot(false);
                 atomic_store_explicit(&g_reboot_pending, 0, memory_order_relaxed);
                 datamodel_append_ondemand_log("Reboot", "Failure");
                 datamodel_set_status(STATUS_ENABLED);

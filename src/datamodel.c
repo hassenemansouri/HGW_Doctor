@@ -198,6 +198,32 @@ static uint32_t dm_read_uint32(const char *param_path) {
     return result;
 }
 
+static bool dm_read_bool(const char *param_path) {
+    char object_path[HGW_MAX_PATH];
+    char param_name[HGW_MAX_PROC_NAME];
+    amxc_var_t val;
+    bool result = false;
+
+    if (!s_dm) return false;
+    if (dm_split_path(param_path, object_path, sizeof(object_path),
+                      param_name, sizeof(param_name)) != 0)
+        return false;
+
+    size_t obj_len = strlen(object_path);
+    if (obj_len > 0 && object_path[obj_len - 1] != '.' && obj_len + 1 < HGW_MAX_PATH) {
+        object_path[obj_len]     = '.';
+        object_path[obj_len + 1] = '\0';
+    }
+
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
+    if (!obj) return false;
+    amxc_var_init(&val);
+    if (amxd_object_get_param(obj, param_name, &val) == amxd_status_ok)
+        result = amxc_var_dyncast(bool, &val);
+    amxc_var_clean(&val);
+    return result;
+}
+
 static void dm_set_datetime_now(const char *param_path) {
     char buf[32];
     time_t now = time(NULL);
@@ -214,10 +240,8 @@ static void dm_set_datetime_now(const char *param_path) {
  * finalize the reboot record: increment RebootCount, set LastRebootTime,
  * and add a Success entry to AnomalyLog. */
 static void datamodel_finalize_reboot_on_boot(void) {
-    FILE *f = fopen(HGW_REBOOT_PENDING_FILE, "r");
-    if (!f) return;
-    fclose(f);
-    unlink(HGW_REBOOT_PENDING_FILE);
+    if (!dm_read_bool(TR181_PENDING_REBOOT)) return;
+    dm_set_bool(TR181_PENDING_REBOOT, false);
 
     uint32_t count = dm_read_uint32(TR181_REBOOT_COUNT);
     dm_set_uint32(TR181_REBOOT_COUNT, count + 1);
@@ -1026,6 +1050,26 @@ void datamodel_set_action_type(const char *action_type) {
 
 uint32_t datamodel_get_reboot_delay_sec(void) {
     return dm_read_uint32(TR181_REBOOT_DELAY_SEC);
+}
+
+bool datamodel_get_pending_reboot(void) {
+    return dm_read_bool(TR181_PENDING_REBOOT);
+}
+
+void datamodel_set_pending_reboot(bool val) {
+    dm_set_bool(TR181_PENDING_REBOOT, val);
+}
+
+uint32_t datamodel_get_reboot_count(void) {
+    return dm_read_uint32(TR181_REBOOT_COUNT);
+}
+
+void datamodel_set_reboot_count(uint32_t val) {
+    dm_set_uint32(TR181_REBOOT_COUNT, val);
+}
+
+void datamodel_set_last_reboot_time(const char *iso) {
+    dm_set_string(TR181_LAST_REBOOT_TIME, iso ? iso : "");
 }
 
 void datamodel_get_last_reboot_time(char *buf, size_t len) {

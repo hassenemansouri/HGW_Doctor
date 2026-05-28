@@ -30,6 +30,7 @@
 #define TR181_REBOOT_DELAY_SEC    TR181_ROOT ".RebootDelaySec"
 #define TR181_REBOOT_COUNT        TR181_ROOT ".RebootCount"
 #define TR181_LAST_REBOOT_TIME    TR181_ROOT ".LastRebootTime"
+#define TR181_PENDING_REBOOT      TR181_ROOT ".PendingReboot"
 
 /* Path of flag file written just before a HGWDoctor-initiated reboot.
  * Survives the reboot on persistent storage; deleted on next boot. */

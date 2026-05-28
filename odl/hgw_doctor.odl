@@ -49,6 +49,7 @@ import "hgw_doctor.so" as "hgw_doctor";
         %persistent uint32 RebootDelaySec = 10;
         %persistent %read-only uint32 RebootCount = 0;
         %persistent %read-only string LastRebootTime = "";
+        %persistent bool PendingReboot = false;
 
         /* Recovery status (RO, updated after each action) */
         %read-only string LastActionType = "";
