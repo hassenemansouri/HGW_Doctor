@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -446,8 +445,8 @@ int recovery_dispatch(const AnomalyEvent *event) {
             task->cfg.action_type = ACTION_PROCESS_RESTART;
         }
         task->use_escalated_action = true;
-        syslog(LOG_INFO, "Escalation dispatch: proc=%s level=%d action=%d",
-               event->process_name, (int)level, (int)task->cfg.action_type);
+        LOG_INFO("Escalation dispatch: proc=%s level=%d action=%d",
+                 event->process_name, (int)level, (int)task->cfg.action_type);
     }
     pthread_mutex_unlock(&s_cfg_mutex);
 
