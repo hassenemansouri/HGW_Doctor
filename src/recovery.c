@@ -18,12 +18,18 @@
 #define REBOOT_MAX_PER_HOUR      3
 #define REBOOT_HOUR_WINDOW_S     3600
 #define REBOOT_RING_SIZE         4
+#define DISPATCH_COOLDOWN_S      300  /* min seconds between recovery dispatches of same anomaly type */
+#define DISPATCH_TYPE_MAX        7    /* ANOMALY_NONE … ANOMALY_ON_DEMAND */
 
 static RecoveryConfig    s_cfg;
 static recovery_callback s_callback = NULL;
 static void             *s_userdata = NULL;
 static pthread_mutex_t   s_cfg_mutex = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int       s_active_threads = ATOMIC_VAR_INIT(0);
+
+/* Per-type dispatch cooldown — prevents hammering while an anomaly persists */
+static time_t          s_last_dispatch[DISPATCH_TYPE_MAX] = {0};
+static pthread_mutex_t s_dispatch_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Reboot rate-limit ring — records timestamps of recent HGWDoctor reboots */
 static time_t          s_reboot_ring[REBOOT_RING_SIZE] = {0};
@@ -380,6 +386,24 @@ int recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdat
     return 0;
 }
 
+/* Returns true and records the timestamp when the cooldown has elapsed.
+ * Returns false (and logs) when the same anomaly type fired too recently. */
+bool recovery_check_dispatch_cooldown(int type_idx) {
+    if (type_idx < 0 || type_idx >= DISPATCH_TYPE_MAX) return true;
+    time_t now = time(NULL);
+    bool ok;
+    pthread_mutex_lock(&s_dispatch_mutex);
+    ok = (now - s_last_dispatch[type_idx] >= DISPATCH_COOLDOWN_S);
+    if (ok)
+        s_last_dispatch[type_idx] = now;
+    pthread_mutex_unlock(&s_dispatch_mutex);
+    if (!ok)
+        LOG_INFO("Recovery cooldown active for anomaly type %d (%lds remaining)",
+                 type_idx,
+                 (long)(DISPATCH_COOLDOWN_S - (time(NULL) - s_last_dispatch[type_idx])));
+    return ok;
+}
+
 int recovery_dispatch(const AnomalyEvent *event) {
     /* Increment before pthread_create so the cap is enforced atomically */
     int prev = atomic_fetch_add(&s_active_threads, 1);
@@ -421,6 +445,8 @@ int recovery_dispatch(const AnomalyEvent *event) {
             task->cfg.action_type = ACTION_PROCESS_RESTART;
         }
         task->use_escalated_action = true;
+        syslog(LOG_INFO, "Escalation dispatch: proc=%s level=%d action=%d",
+               event->process_name, (int)level, (int)task->cfg.action_type);
     }
     pthread_mutex_unlock(&s_cfg_mutex);
 
@@ -460,6 +486,7 @@ void recovery_cleanup(void) {
     s_callback = NULL;
     s_userdata = NULL;
     pthread_mutex_destroy(&s_cfg_mutex);
+    pthread_mutex_destroy(&s_dispatch_mutex);
     pthread_mutex_destroy(&s_escl_mutex);
 }
 
@@ -536,6 +563,10 @@ void escalation_advance(const char *process_name) {
 
 /* Reset all escalation levels and cooldown timestamps — used by ResetCounters RPC. */
 void recovery_reset_cooldowns(void) {
+    pthread_mutex_lock(&s_dispatch_mutex);
+    memset(s_last_dispatch, 0, sizeof(s_last_dispatch));
+    pthread_mutex_unlock(&s_dispatch_mutex);
+
     pthread_mutex_lock(&s_escl_mutex);
     for (int i = 0; i < HGW_MAX_PROC_LIST; i++)
         s_escl[i].last_time = 0;

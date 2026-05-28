@@ -16,6 +16,7 @@ typedef struct {
 typedef void (*recovery_callback)(const RecoveryResult *result, void *userdata);
 
 int  recovery_init(const RecoveryConfig *cfg, recovery_callback cb, void *userdata);
+bool recovery_check_dispatch_cooldown(int type_idx);
 int  recovery_dispatch(const AnomalyEvent *event);
 void recovery_update_config(const RecoveryConfig *cfg);
 void recovery_cleanup(void);

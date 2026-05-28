@@ -39,7 +39,6 @@
 /* -------------------------------------------------------------------------
  * Globals
  * ------------------------------------------------------------------------- */
-#define RECOVERY_COOLDOWN_S  300  /* min seconds between recovery actions of same type */
 #define WD_PET_INTERVAL_S     10  /* watchdog keep-alive interval */
 
 static volatile sig_atomic_t g_running           = 1;
@@ -50,10 +49,6 @@ static _Atomic int           g_monitoring_enabled = ATOMIC_VAR_INIT(1);
 static _Atomic int           g_dm_changed        = ATOMIC_VAR_INIT(0); /* set by DM signal */
 static _Atomic int           g_reboot_pending    = ATOMIC_VAR_INIT(0); /* deferred reboot armed */
 static int                   s_reboot_ticks      = 0;  /* 100ms ticks until reboot; main loop only */
-
-/* Per-AnomalyType last recovery dispatch time — cooldown enforcement.
- * Accessed only from on_anomaly(), which is called serially by the analyzer thread. */
-static time_t s_last_recovery[6] = {0};
 
 #define ANOMALY_TYPE_COUNT 7   /* ANOMALY_NONE … ANOMALY_ON_DEMAND */
 #define VERIFY_DELAY_S     30  /* seconds after recovery action to re-check metric */
@@ -477,17 +472,8 @@ static void on_anomaly(const AnomalyEvent *event, void *userdata) {
 
     datamodel_increment_anomaly_count();
 
-    /* Per-type cooldown — prevents hammering recovery while an anomaly persists */
-    int type_idx = ((int)event->type >= 0 && (int)event->type < 6) ? (int)event->type : 0;
-    time_t now_rc = time(NULL);
-    if (now_rc - s_last_recovery[type_idx] >= RECOVERY_COOLDOWN_S) {
-        s_last_recovery[type_idx] = now_rc;
+    if (recovery_check_dispatch_cooldown((int)event->type))
         recovery_dispatch(event);
-    } else {
-        LOG_INFO("Recovery cooldown active for anomaly type %d (%lds remaining)",
-                 event->type,
-                 (long)(RECOVERY_COOLDOWN_S - (now_rc - s_last_recovery[type_idx])));
-    }
 }
 
 /* -------------------------------------------------------------------------
