@@ -86,6 +86,8 @@ void datamodel_update_monitored_process(const char *name, const char *status,
 void datamodel_record_process_restart(const char *name);
 void datamodel_sync_monitored_processes(
         const char proc_names[][HGW_MAX_PROC_NAME], int proc_count);
+uint32_t datamodel_get_process_cpu_threshold(const char *name);
+uint32_t datamodel_get_process_mem_threshold(const char *name);
 
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);

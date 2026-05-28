@@ -890,6 +890,38 @@ amxd_status_t dm_set_profile(amxd_object_t *obj, amxd_function_t *fn,
 }
 
 /* -------------------------------------------------------------------------
+ * Per-process threshold getters — fall back to global threshold if the
+ * MonitoredProcess instance has no override (value == 0).
+ * ------------------------------------------------------------------------- */
+static uint32_t mp_get_uint32(const char *name, const char *param,
+                               uint32_t fallback) {
+    if (!s_dm || !name || name[0] == '\0') return fallback;
+    amxd_object_t *inst = mp_find_by_name(name);
+    if (!inst) return fallback;
+    amxc_var_t val;
+    amxc_var_init(&val);
+    uint32_t result = fallback;
+    if (amxd_object_get_param(inst, param, &val) == amxd_status_ok) {
+        uint32_t v = amxc_var_dyncast(uint32_t, &val);
+        if (v > 0) result = v;
+    }
+    amxc_var_clean(&val);
+    return result;
+}
+
+uint32_t datamodel_get_process_cpu_threshold(const char *name) {
+    DmConfig cfg;
+    uint32_t global = (datamodel_get_config(&cfg)) ? cfg.cpu_threshold_pct : 0;
+    return mp_get_uint32(name, "CPUThreshold", global);
+}
+
+uint32_t datamodel_get_process_mem_threshold(const char *name) {
+    DmConfig cfg;
+    uint32_t global = (datamodel_get_config(&cfg)) ? cfg.mem_threshold_pct : 0;
+    return mp_get_uint32(name, "MemThreshold", global);
+}
+
+/* -------------------------------------------------------------------------
  * Read all writable DM parameters back into a DmConfig snapshot.
  * Called by the main loop whenever g_dm_changed fires so that every
  * write via ACS or ubus is immediately reflected in the running daemon.

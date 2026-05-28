@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "analyzer.h"
+#include "datamodel.h"
 #include "logger.h"
 #include "monitor.h"
 #include "types.h"
@@ -213,10 +214,11 @@ static void *analyzer_thread(void *arg) {
                 proc_dead_alert[i] = 0;
 
                 /* Per-process CPU */
-                if (ps->cpu_pct >= cfg.cpu_threshold_pct) {
+                uint32_t cpu_thr = datamodel_get_process_cpu_threshold(ps->name);
+                if (ps->cpu_pct >= cpu_thr) {
                     if (!proc_cpu_alert[i] &&
                         sustained_threshold(s_history.proc_cpu[i], s_history.count,
-                                            cfg.cpu_threshold_pct, required_samples)) {
+                                            cpu_thr, required_samples)) {
                         AnomalyEvent ev = {
                             .type = ANOMALY_PROCESS_CPU,
                             .metric_value = ps->cpu_pct,
@@ -232,10 +234,11 @@ static void *analyzer_thread(void *arg) {
                 }
 
                 /* Per-process Memory */
-                if (ps->mem_pct >= cfg.mem_threshold_pct) {
+                uint32_t mem_thr = datamodel_get_process_mem_threshold(ps->name);
+                if (ps->mem_pct >= mem_thr) {
                     if (!proc_mem_alert[i] &&
                         sustained_threshold(s_history.proc_mem[i], s_history.count,
-                                            cfg.mem_threshold_pct, required_samples)) {
+                                            mem_thr, required_samples)) {
                         AnomalyEvent ev = {
                             .type = ANOMALY_PROCESS_MEM,
                             .metric_value = ps->mem_pct,
