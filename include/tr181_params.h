@@ -35,6 +35,7 @@
 /* Path of flag file written just before a HGWDoctor-initiated reboot.
  * Survives the reboot on persistent storage; deleted on next boot. */
 #define HGW_REBOOT_PENDING_FILE   "/etc/amx/hgw_doctor/reboot_pending"
+#define HGW_PERSIST_FILE          "/etc/amx/hgw_doctor/persist/hgw_doctor.odl"
 
 /* ── Recovery status (RO) ────────────────────────────────────────────────── */
 #define TR181_LAST_ACTION_TYPE    TR181_ROOT ".LastActionType"

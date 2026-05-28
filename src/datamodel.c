@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <syslog.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include <amxc/amxc.h>
 #include <amxp/amxp.h>
@@ -235,10 +236,54 @@ static void dm_set_datetime_now(const char *param_path) {
  * Initialisation / teardown
  * ------------------------------------------------------------------------- */
 
+/* Write %populate ODL snippet to HGW_PERSIST_FILE.
+ * Creates the persist directory if it does not exist. */
+static void write_persist_odl(const char *body) {
+    /* Ensure parent directory exists */
+    struct stat st = {0};
+    if (stat("/etc/amx/hgw_doctor/persist", &st) != 0)
+        mkdir("/etc/amx/hgw_doctor/persist", 0755);
+
+    FILE *f = fopen(HGW_PERSIST_FILE, "w");
+    if (!f) {
+        syslog(LOG_ERR, "Failed to write persist file %s: %m", HGW_PERSIST_FILE);
+        return;
+    }
+    fputs(body, f);
+    fclose(f);
+    sync();
+}
+
+void datamodel_write_persist_pending_reboot(void) {
+    write_persist_odl(
+        "%populate {\n"
+        "    object HGWDoctor {\n"
+        "        parameter PendingReboot = true;\n"
+        "    }\n"
+        "}\n"
+    );
+    syslog(LOG_INFO, "Persist file written: PendingReboot=true");
+}
+
+static void write_persist_reboot_done(uint32_t count, const char *ts) {
+    char body[256];
+    snprintf(body, sizeof(body),
+        "%%populate {\n"
+        "    object HGWDoctor {\n"
+        "        parameter PendingReboot = false;\n"
+        "        parameter RebootCount = %u;\n"
+        "        parameter LastRebootTime = \"%s\";\n"
+        "    }\n"
+        "}\n",
+        count, ts ? ts : "");
+    write_persist_odl(body);
+}
+
 /* Called from datamodel_init() after persistent values are restored.
- * If the flag file written before the last HGWDoctor-triggered reboot exists,
- * finalize the reboot record: increment RebootCount, set LastRebootTime,
- * and add a Success entry to AnomalyLog. */
+ * If PendingReboot=true was loaded from the persist file, finalize the
+ * reboot record: increment RebootCount, set LastRebootTime, and add a
+ * Success entry to AnomalyLog.  Then immediately rewrite the persist file
+ * so RebootCount survives a subsequent crash before graceful shutdown. */
 static void datamodel_finalize_reboot_on_boot(void) {
     if (!dm_read_bool(TR181_PENDING_REBOOT)) return;
     dm_set_bool(TR181_PENDING_REBOOT, false);
@@ -294,8 +339,12 @@ static void datamodel_finalize_reboot_on_boot(void) {
     amxd_trans_apply(&trans, s_dm);
     amxd_trans_clean(&trans);
 
+    /* Rewrite persist file immediately so RebootCount survives a subsequent
+     * crash before the graceful-shutdown AMXO_STOP save fires. */
+    write_persist_reboot_done(count + 1, ts_buf);
+
     s_booted_after_reboot = true;
-    syslog(LOG_INFO, "Boot after HGWDoctor reboot: RebootCount=%u LastRebootTime=%s",
+    syslog(LOG_NOTICE, "Post-reboot: RebootCount=%u LastRebootTime=%s",
            count + 1, ts_buf);
 }
 

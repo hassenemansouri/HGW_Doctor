@@ -76,6 +76,7 @@ void     datamodel_append_ondemand_log(const char *action_taken,
 bool     datamodel_was_deferred_reboot_boot(void);
 bool     datamodel_get_pending_reboot(void);
 void     datamodel_set_pending_reboot(bool val);
+void     datamodel_write_persist_pending_reboot(void);
 uint32_t datamodel_get_reboot_count(void);
 void     datamodel_set_reboot_count(uint32_t val);
 void     datamodel_set_last_reboot_time(const char *iso);

@@ -1046,8 +1046,10 @@ int main(int argc, char *argv[]) {
             s_reboot_ticks--;
             if (s_reboot_ticks == 0) {
                 LOG_INFO("Reboot countdown complete — executing reboot");
-                /* Mark in the persistent DM so next boot detects this reboot */
+                /* Write persist file directly + sync() so PendingReboot=true
+                 * survives the reboot even if SIGTERM never fires. */
                 datamodel_set_pending_reboot(true);
+                datamodel_write_persist_pending_reboot();
                 watchdog_close();
                 recovery_do_reboot(s_scripts_dir);
                 /* Should not reach here; clear pending state if reboot fails */
