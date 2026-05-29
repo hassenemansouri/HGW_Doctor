@@ -600,6 +600,23 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
+    /* Check for post-reboot state — PendingReboot=true means we triggered
+     * the last reboot; increment RebootCount and record the time. */
+    bool had_pending_reboot = datamodel_get_pending_reboot();
+    if (had_pending_reboot) {
+        datamodel_set_pending_reboot(false);
+        uint32_t count = datamodel_get_reboot_count();
+        datamodel_set_reboot_count(count + 1);
+        char iso[32];
+        time_t now = time(NULL);
+        strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+        datamodel_set_last_reboot_time(iso);
+        datamodel_save_persist();
+        datamodel_set_booted_after_reboot(true);
+        LOG_INFO("Post-reboot: RebootCount=%u LastRebootTime=%s",
+                 count + 1, iso);
+    }
+
     /* Connect to ubus and register the data model */
     amxb_be_load("/usr/bin/mods/amxb/mod-amxb-ubus.so");
     if (amxb_connect(&g_bus_ctx, "ubus:/var/run/ubus/ubus.sock") == 0) {
@@ -683,7 +700,7 @@ int main(int argc, char *argv[]) {
 
     /* If we booted after a HGWDoctor-triggered reboot, record it in the
      * reboot ring so the guard's rate-limit counts it correctly. */
-    if (datamodel_was_deferred_reboot_boot()) {
+    if (had_pending_reboot) {
         struct timespec bts = {0};
         clock_gettime(CLOCK_BOOTTIME, &bts);
         recovery_record_reboot_completed(time(NULL) - bts.tv_sec);

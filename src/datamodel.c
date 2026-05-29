@@ -279,74 +279,6 @@ static void write_persist_reboot_done(uint32_t count, const char *ts) {
     write_persist_odl(body);
 }
 
-/* Called from datamodel_init() after persistent values are restored.
- * If PendingReboot=true was loaded from the persist file, finalize the
- * reboot record: increment RebootCount, set LastRebootTime, and add a
- * Success entry to AnomalyLog.  Then immediately rewrite the persist file
- * so RebootCount survives a subsequent crash before graceful shutdown. */
-static void datamodel_finalize_reboot_on_boot(void) {
-    if (!dm_read_bool(TR181_PENDING_REBOOT)) return;
-    dm_set_bool(TR181_PENDING_REBOOT, false);
-
-    uint32_t count = dm_read_uint32(TR181_REBOOT_COUNT);
-    dm_set_uint32(TR181_REBOOT_COUNT, count + 1);
-
-    struct timespec boot_ts = {0};
-    clock_gettime(CLOCK_BOOTTIME, &boot_ts);
-    time_t boot_wall = time(NULL) - boot_ts.tv_sec;
-    char ts_buf[32];
-    dm_format_utc(boot_wall, ts_buf, sizeof(ts_buf));
-    dm_set_string(TR181_LAST_REBOOT_TIME, ts_buf);
-
-    /* Add a Success log entry (the Pending entry did not survive the reboot) */
-    amxd_object_t *log_obj = amxd_dm_findf(s_dm, "%s", TR181_ANOMALY_LOG);
-    if (log_obj) {
-        uint32_t log_count = 0;
-        uint32_t oldest_idx = 0;
-        bool have_oldest = false;
-        amxd_object_for_each(instance, it, log_obj) {
-            amxd_object_t *inst = amxc_container_of(it, amxd_object_t, it);
-            if (!have_oldest) {
-                oldest_idx = amxd_object_get_index(inst);
-                have_oldest = true;
-            }
-            log_count++;
-        }
-        if (log_count >= HGW_ANOMALY_LOG_MAX && have_oldest) {
-            amxd_trans_t del;
-            amxd_trans_init(&del);
-            amxd_trans_set_attr(&del, amxd_tattr_change_ro, true);
-            amxd_trans_select_object(&del, log_obj);
-            amxd_trans_del_inst(&del, oldest_idx, NULL);
-            amxd_trans_apply(&del, s_dm);
-            amxd_trans_clean(&del);
-        }
-    }
-
-    amxd_trans_t trans;
-    amxd_trans_init(&trans);
-    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
-    amxd_trans_select_pathf(&trans, "%s", TR181_ANOMALY_LOG);
-    amxd_trans_add_inst(&trans, 0, NULL);
-    amxd_trans_set_value(cstring_t, &trans, "Timestamp",   ts_buf);
-    amxd_trans_set_value(cstring_t, &trans, "AnomalyType", "OnDemand");
-    amxd_trans_set_value(uint32_t,  &trans, "MetricValue", 0);
-    amxd_trans_set_value(cstring_t, &trans, "ProcessName", "");
-    amxd_trans_set_value(cstring_t, &trans, "ActionTaken", "Reboot");
-    amxd_trans_set_value(cstring_t, &trans, "ActionResult", "Success");
-    amxd_trans_set_value(cstring_t, &trans, "RecoveryStatus", "Resolved");
-    amxd_trans_set_value(uint32_t,  &trans, "AnomalyDurationSeconds", 0);
-    amxd_trans_apply(&trans, s_dm);
-    amxd_trans_clean(&trans);
-
-    /* Rewrite persist file immediately so RebootCount survives a subsequent
-     * crash before the graceful-shutdown AMXO_STOP save fires. */
-    write_persist_reboot_done(count + 1, ts_buf);
-
-    s_booted_after_reboot = true;
-    syslog(LOG_NOTICE, "Post-reboot: RebootCount=%u LastRebootTime=%s",
-           count + 1, ts_buf);
-}
 
 void datamodel_start_sync(void) {
     /* amxs sync removed — Device.X_TELNET_HGWDoctor is proxied by
@@ -369,14 +301,24 @@ int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path) {
     }
     amxo_parser_invoke_entry_points(parser, dm, AMXO_START);
 
-    /* libamxo has just restored %persistent values from disk — pull the saved
-     * counter values back into the in-memory atomics so they survive restarts. */
+    /* Explicitly load our hand-written persist file (written before any
+     * forced reboot) so PendingReboot=true is visible to the caller.
+     * amxo_parser_invoke_entry_points(AMXO_START) only loads the
+     * framework-saved "hgw-doctor.odl" (hyphen), which always has
+     * PendingReboot=false because AMXO_STOP never fires on a hard reboot.
+     * Parsing HGW_PERSIST_FILE last makes our value win. */
+    {
+        struct stat _pst = {0};
+        if (stat(HGW_PERSIST_FILE, &_pst) == 0)
+            amxo_parser_parse_file(parser, HGW_PERSIST_FILE,
+                                   amxd_dm_get_root(dm));
+    }
+
+    /* Pull the saved counter values back into the in-memory atomics so
+     * they survive restarts. */
     atomic_store(&s_anomaly_count, dm_read_uint32(TR181_ANOMALY_COUNT));
     atomic_store(&s_total_actions, dm_read_uint32(TR181_STAT_TOTAL_ACTIONS));
     atomic_store(&s_total_uploads, dm_read_uint32(TR181_STAT_TOTAL_UPLOADS));
-
-    /* Finalize any pending HGWDoctor-triggered reboot from the previous run */
-    datamodel_finalize_reboot_on_boot();
 
     syslog(LOG_INFO, "Data model initialised from %s", odl_path);
     return 0;
@@ -386,6 +328,17 @@ void datamodel_cleanup(amxd_dm_t *dm, amxo_parser_t *parser) {
     amxo_parser_invoke_entry_points(parser, dm, AMXO_STOP);
     /* Persistent state is saved by libamxo (odl-save-on-stop = true) */
     s_dm = NULL;
+}
+
+void datamodel_save_persist(void) {
+    uint32_t count = dm_read_uint32(TR181_REBOOT_COUNT);
+    char ts[32] = {0};
+    datamodel_get_last_reboot_time(ts, sizeof(ts));
+    write_persist_reboot_done(count, ts);
+}
+
+void datamodel_set_booted_after_reboot(bool val) {
+    s_booted_after_reboot = val;
 }
 
 /* -------------------------------------------------------------------------
