@@ -174,6 +174,8 @@ static int do_reboot(const char *scripts_dir) {
     return run_argv(reboot_fallback);
 }
 
+static ActionType fallback_for_blocked_reboot(const AnomalyEvent *event);
+
 static void *recovery_run(void *arg) {
     RecoveryTask   *task = (RecoveryTask *)arg;
     const AnomalyEvent *event = &task->event;
@@ -192,6 +194,10 @@ static void *recovery_run(void *arg) {
                ? ACTION_CACHE_CLEAR : task->cfg.action_type;
     } else {
         action = task->cfg.action_type;
+    }
+    if (action == ACTION_REBOOT && !task->cfg.allow_reboot) {
+        action = fallback_for_blocked_reboot(event);
+        LOG_WARN("Reboot recovery blocked by AllowReboot=false; using action=%d", action);
     }
     result.action = action;
     result.result = RESULT_NONE;
@@ -472,6 +478,7 @@ void recovery_update_config(const RecoveryConfig *cfg) {
     memcpy(s_cfg.process_names, cfg->process_names, sizeof(s_cfg.process_names));
     s_cfg.escalation_enabled      = cfg->escalation_enabled;
     s_cfg.escalation_reset_minutes = cfg->escalation_reset_minutes;
+    s_cfg.allow_reboot            = cfg->allow_reboot;
     /* scripts_dir is host-side config, not exposed via DM — leave unchanged */
     pthread_mutex_unlock(&s_cfg_mutex);
     LOG_INFO("Recovery config updated: action=%d processes=%d escalation=%d",
@@ -502,6 +509,15 @@ ActionType get_escalated_action(const char *process_name, uint32_t current_level
         case 2:  return ACTION_REBOOT;
         default: return ACTION_REBOOT;
     }
+}
+
+static ActionType fallback_for_blocked_reboot(const AnomalyEvent *event) {
+    if (event && (event->type == ANOMALY_PROCESS ||
+                  event->type == ANOMALY_PROCESS_CPU ||
+                  event->type == ANOMALY_PROCESS_MEM)) {
+        return ACTION_PROCESS_RESTART;
+    }
+    return ACTION_CACHE_CLEAR;
 }
 
 /* Thread-safe read of in-memory escalation level (called from analyzer thread). */

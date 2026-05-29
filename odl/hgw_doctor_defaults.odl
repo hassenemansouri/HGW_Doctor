@@ -22,6 +22,7 @@
         parameter ThresholdDuration = 60;
         parameter PollInterval    = 5;
         parameter ActionType      = "None";
+        parameter EscalationEnabled = false;
         parameter ProcessList     = "cwmp_plugin,tr181-device,dhcpv4-manager,tr181-dns";
         parameter UploadURL       = "https://diagnostics.telnet.tn/upload";
 

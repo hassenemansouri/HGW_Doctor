@@ -56,6 +56,8 @@ static void config_defaults(HgwConfig *cfg) {
     cfg->upload_max_retries = 3;
     cfg->upload_retry_delay_s = 5;
     cfg->tls_verify = true;
+    cfg->allow_reboot = false;
+    cfg->enable_watchdog = false;
 
     strncpy(cfg->scripts_dir, "/usr/lib/hgw_doctor/actions", sizeof(cfg->scripts_dir) - 1);
     cfg->scripts_dir[sizeof(cfg->scripts_dir) - 1] = '\0';
@@ -99,6 +101,8 @@ static void apply_key_value(HgwConfig *cfg, const char *key, const char *value) 
         strncpy(cfg->scripts_dir, value, sizeof(cfg->scripts_dir) - 1);
         cfg->scripts_dir[sizeof(cfg->scripts_dir) - 1] = '\0';
     }
+    else if (strcasecmp(key, "AllowReboot") == 0) cfg->allow_reboot = parse_bool(value);
+    else if (strcasecmp(key, "EnableWatchdog") == 0) cfg->enable_watchdog = parse_bool(value);
     else if (strcasecmp(key, "DiagOutputDir") == 0) {
         strncpy(cfg->diag_output_dir, value, sizeof(cfg->diag_output_dir) - 1);
         cfg->diag_output_dir[sizeof(cfg->diag_output_dir) - 1] = '\0';

@@ -47,7 +47,7 @@
             string ActionType = "ProcessRestart" {
                 on action write call dm_on_param_changed;
             }
-            bool EscalationEnabled = true {
+            bool EscalationEnabled = false {
                 on action write call dm_on_param_changed;
             }
             uint32 EscalationResetMinutes = 60 {

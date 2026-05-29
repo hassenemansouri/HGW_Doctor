@@ -23,6 +23,8 @@ typedef struct {
     char       process_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME];
     int        process_count;
     char       scripts_dir[HGW_MAX_PATH];
+    bool       allow_reboot;
+    bool       enable_watchdog;
 
     /* Diagnostics */
     char       diag_output_dir[HGW_MAX_PATH];

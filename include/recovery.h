@@ -11,6 +11,7 @@ typedef struct {
     char       scripts_dir[HGW_MAX_PATH];
     bool       escalation_enabled;
     uint32_t   escalation_reset_minutes;
+    bool       allow_reboot;
 } RecoveryConfig;
 
 typedef void (*recovery_callback)(const RecoveryResult *result, void *userdata);

@@ -153,6 +153,8 @@ static bool fetch_config_from_bus(DmConfig *out) {
 static char s_scripts_dir[HGW_MAX_PATH]                                    = {0};
 static char s_fallback_proc_names[HGW_MAX_PROC_LIST][HGW_MAX_PROC_NAME]   = {{0}};
 static int  s_fallback_proc_count                                           = 0;
+static bool s_allow_reboot                                                  = false;
+static bool s_enable_watchdog                                               = false;
 
 static ActionType action_str_to_type(const char *s) {
     if (!s || s[0] == '\0') return ACTION_NONE;
@@ -224,6 +226,16 @@ static void execute_on_demand_action(const char *action_str, const DmConfig *dmc
     LOG_INFO("On-demand action requested: %s", action_str);
 
     if (action == ACTION_REBOOT) {
+        if (!s_allow_reboot) {
+            LOG_WARN("On-demand reboot denied: AllowReboot=false");
+            strncpy(s_ondemand_log_act, "Reboot",   sizeof(s_ondemand_log_act) - 1);
+            strncpy(s_ondemand_log_res, "Rejected", sizeof(s_ondemand_log_res) - 1);
+            atomic_store(&s_ondemand_log_ready, 1);
+            strncpy(s_ondemand_status_val, STATUS_ENABLED, sizeof(s_ondemand_status_val) - 1);
+            atomic_store(&s_ondemand_status_ready, 1);
+            return;
+        }
+
         /* Safety guards — read-only DM access, no socket writes */
         char last_rt[32] = {0};
         datamodel_get_last_reboot_time(last_rt, sizeof(last_rt));
@@ -348,6 +360,7 @@ static void apply_dm_config(const DmConfig *dmc) {
     strncpy(rcfg2.scripts_dir, s_scripts_dir, HGW_MAX_PATH - 1);
     rcfg2.escalation_enabled       = datamodel_get_escalation_enabled();
     rcfg2.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
+    rcfg2.allow_reboot             = s_allow_reboot;
     recovery_update_config(&rcfg2);
 
     if (effective.upload_url[0] != '\0')
@@ -590,6 +603,10 @@ int main(int argc, char *argv[]) {
     strncpy(s_scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
     memcpy(s_fallback_proc_names, cfg.process_names, sizeof(s_fallback_proc_names));
     s_fallback_proc_count = cfg.process_count;
+    s_allow_reboot = cfg.allow_reboot;
+    s_enable_watchdog = cfg.enable_watchdog;
+    if (!s_allow_reboot)
+        LOG_WARN("AllowReboot=false: all HGW-Doctor reboot actions are blocked");
 
     /* 3. Signal handling */
     install_signals();
@@ -696,6 +713,7 @@ int main(int argc, char *argv[]) {
     strncpy(rcfg.scripts_dir, cfg.scripts_dir, HGW_MAX_PATH - 1);
     rcfg.escalation_enabled       = datamodel_get_escalation_enabled();
     rcfg.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
+    rcfg.allow_reboot             = s_allow_reboot;
     recovery_init(&rcfg, on_recovery_done, NULL);
 
     /* If we booted after a HGWDoctor-triggered reboot, record it in the
@@ -721,18 +739,26 @@ int main(int argc, char *argv[]) {
     uploader_init(&ucfg, on_upload_done, NULL);
 
     /* 6. Start threads */
-    if (monitor_start() != 0) {
-        LOG_ERROR("Failed to start monitor thread — aborting");
-        return EXIT_FAILURE;
-    }
-    if (analyzer_start() != 0) {
-        LOG_ERROR("Failed to start analyzer thread — aborting");
-        monitor_stop();
-        return EXIT_FAILURE;
+    if (atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)) {
+        if (monitor_start() != 0) {
+            LOG_ERROR("Failed to start monitor thread — aborting");
+            return EXIT_FAILURE;
+        }
+        if (analyzer_start() != 0) {
+            LOG_ERROR("Failed to start analyzer thread — aborting");
+            monitor_stop();
+            return EXIT_FAILURE;
+        }
+    } else {
+        LOG_INFO("Monitoring disabled by persisted DM state; workers not started");
     }
     write_pid_file();
-    watchdog_open();
-    datamodel_set_status("Enabled");
+    if (s_enable_watchdog)
+        watchdog_open();
+    else
+        LOG_INFO("EnableWatchdog=false: hardware watchdog disabled");
+    datamodel_set_status(atomic_load_explicit(&g_monitoring_enabled, memory_order_relaxed)
+                         ? STATUS_ENABLED : STATUS_DISABLED);
 
     LOG_INFO("HGW-Doctor running");
 
@@ -771,6 +797,7 @@ int main(int argc, char *argv[]) {
             strncpy(rcfg_hup.scripts_dir, cur->scripts_dir, HGW_MAX_PATH - 1);
             rcfg_hup.escalation_enabled       = datamodel_get_escalation_enabled();
             rcfg_hup.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
+            rcfg_hup.allow_reboot             = cur->allow_reboot;
             recovery_update_config(&rcfg_hup);
 
             if (cur->diag_output_dir[0] != '\0')
@@ -779,6 +806,8 @@ int main(int argc, char *argv[]) {
             strncpy(s_scripts_dir, cur->scripts_dir, HGW_MAX_PATH - 1);
             memcpy(s_fallback_proc_names, cur->process_names, sizeof(s_fallback_proc_names));
             s_fallback_proc_count = cur->process_count;
+            s_allow_reboot = cur->allow_reboot;
+            s_enable_watchdog = cur->enable_watchdog;
 
             UploaderConfig ucfg_hup = {0};
             ucfg_hup.timeout_s     = cur->upload_timeout_s;
@@ -1063,6 +1092,14 @@ int main(int argc, char *argv[]) {
             s_reboot_ticks--;
             if (s_reboot_ticks == 0) {
                 LOG_INFO("Reboot countdown complete — executing reboot");
+                if (!s_allow_reboot) {
+                    LOG_WARN("Deferred reboot cancelled: AllowReboot=false");
+                    datamodel_set_pending_reboot(false);
+                    atomic_store_explicit(&g_reboot_pending, 0, memory_order_relaxed);
+                    datamodel_append_ondemand_log("Reboot", "Rejected");
+                    datamodel_set_status(STATUS_ENABLED);
+                    continue;
+                }
                 /* Write persist file directly + sync() so PendingReboot=true
                  * survives the reboot even if SIGTERM never fires. */
                 datamodel_set_pending_reboot(true);
