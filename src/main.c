@@ -918,7 +918,7 @@ int main(int argc, char *argv[]) {
             if (snap.recovery_valid) {
                 datamodel_record_action(&snap.recovery_result);
 
-                /* Capture escalation level BEFORE advancing (level used for this action) */
+                /* Escalation was already advanced at dispatch time; read current level */
                 uint32_t esc_lvl = 0;
                 if (snap.recovery_event.process_name[0] != '\0')
                     esc_lvl = escalation_get_level(snap.recovery_event.process_name);
@@ -934,10 +934,16 @@ int main(int argc, char *argv[]) {
                     snap.recovery_result.process_name[0] != '\0')
                     datamodel_record_process_restart(snap.recovery_result.process_name);
 
-                /* Advance escalation level for next action */
+                /* Sync escalation state to DM (level was already incremented at dispatch) */
                 if (datamodel_get_escalation_enabled() &&
-                    snap.recovery_event.process_name[0] != '\0')
-                    escalation_advance(snap.recovery_event.process_name);
+                    snap.recovery_event.process_name[0] != '\0') {
+                    const char *pname = snap.recovery_event.process_name;
+                    datamodel_set_escalation_level(pname, escalation_get_level(pname));
+                    datamodel_increment_escalation_count(pname);
+                    datamodel_set_last_escalation_time(pname);
+                    LOG_INFO("Escalation advanced for %s: level=%u",
+                             pname, escalation_get_level(pname));
+                }
 
                 /* Start 30-second verification timer */
                 int vtype = (int)snap.recovery_event.type;

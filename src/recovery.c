@@ -434,16 +434,8 @@ int recovery_dispatch(const AnomalyEvent *event) {
     task->userdata = s_userdata;
     /* Escalation: override action_type with escalated action when enabled */
     if (s_cfg.escalation_enabled) {
-        pthread_mutex_lock(&s_escl_mutex);
-        uint32_t level = 0;
-        for (int i = 0; i < HGW_MAX_PROC_LIST; i++) {
-            if (s_escl[i].used &&
-                strcmp(s_escl[i].process_name, event->process_name) == 0) {
-                level = s_escl[i].level;
-                break;
-            }
-        }
-        pthread_mutex_unlock(&s_escl_mutex);
+        escalation_advance(event->process_name);
+        uint32_t level = escalation_get_level(event->process_name);
         task->cfg.action_type = get_escalated_action(event->process_name, level);
         /* A dead process must be restarted — cache clear cannot revive it */
         if (event->type == ANOMALY_PROCESS &&
@@ -536,7 +528,7 @@ uint32_t escalation_get_level(const char *process_name) {
     return level;
 }
 
-/* Advance escalation level after a recovery action (main thread only). */
+/* Increment escalation level (thread-safe). DM sync is caller's responsibility. */
 void escalation_advance(const char *process_name) {
     if (!process_name || process_name[0] == '\0') return;
 
@@ -567,14 +559,6 @@ void escalation_advance(const char *process_name) {
         s_escl[slot].last_time = time(NULL);
     }
     pthread_mutex_unlock(&s_escl_mutex);
-
-    /* Mirror new state to data model (main thread — DM access is safe here) */
-    datamodel_set_escalation_level(process_name,
-                                   escalation_get_level(process_name));
-    datamodel_increment_escalation_count(process_name);
-    datamodel_set_last_escalation_time(process_name);
-    LOG_INFO("Escalation advanced for %s: level=%u",
-             process_name, escalation_get_level(process_name));
 }
 
 /* Reset all escalation levels and cooldown timestamps — used by ResetCounters RPC. */
