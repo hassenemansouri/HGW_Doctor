@@ -223,6 +223,8 @@ static void *recovery_run(void *arg) {
             result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
             break;
         case ACTION_REBOOT:
+            datamodel_write_persist_pending_reboot();
+            sync();
             result.exit_code = do_reboot(task->cfg.scripts_dir);
             result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
             break;
