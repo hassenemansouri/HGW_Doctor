@@ -244,6 +244,7 @@ static void write_persist_odl(const char *body) {
     if (stat("/etc/amx/hgw_doctor/persist", &st) != 0)
         mkdir("/etc/amx/hgw_doctor/persist", 0755);
 
+    syslog(LOG_INFO, "write_persist_odl: writing to %s", HGW_PERSIST_FILE);
     FILE *f = fopen(HGW_PERSIST_FILE, "w");
     if (!f) {
         syslog(LOG_ERR, "Failed to write persist file %s: %m", HGW_PERSIST_FILE);

@@ -224,6 +224,19 @@ static void *recovery_run(void *arg) {
             break;
         case ACTION_REBOOT:
             datamodel_write_persist_pending_reboot();
+            {
+                FILE *_pf = fopen("/etc/amx/hgw_doctor/persist/hgw_doctor.odl", "w");
+                if (_pf) {
+                    fputs("%populate {\n    object HGWDoctor {\n"
+                          "        parameter PendingReboot = true;\n"
+                          "    }\n}\n", _pf);
+                    fclose(_pf);
+                    sync();
+                    syslog(LOG_NOTICE, "Pre-reboot persist written (fallback)");
+                } else {
+                    syslog(LOG_ERR, "Pre-reboot persist FAILED: %m");
+                }
+            }
             sync();
             result.exit_code = do_reboot(task->cfg.scripts_dir);
             result.result = (result.exit_code == 0) ? RESULT_SUCCESS : RESULT_FAILURE;
