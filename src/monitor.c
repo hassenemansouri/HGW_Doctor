@@ -173,7 +173,7 @@ static void read_thread_stats(pid_t pid, ThreadStats *out) {
     char line[128];
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
-        char tpath[128];
+        char tpath[256];
         snprintf(tpath, sizeof(tpath), "/proc/%d/task/%s/status",
                  (int)pid, ent->d_name);
         FILE *tf = fopen(tpath, "r");
