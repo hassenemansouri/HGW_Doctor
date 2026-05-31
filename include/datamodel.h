@@ -90,17 +90,16 @@ void datamodel_reset_on_demand_target(void);
 /* MonitoredProcess[] table helpers */
 void datamodel_update_monitored_process(const char *name, const char *status,
                                         uint32_t pid, uint32_t cpu_pct,
-                                        uint32_t mem_pct);
+                                        uint32_t mem_pct,
+                                        uint32_t thread_count,
+                                        uint32_t zombie_count,
+                                        uint32_t blocked_count);
 void datamodel_record_process_restart(const char *name);
 void datamodel_sync_monitored_processes(
         const char proc_names[][HGW_MAX_PROC_NAME], int proc_count);
 uint32_t datamodel_get_process_cpu_threshold(const char *name);
 uint32_t datamodel_get_process_mem_threshold(const char *name);
 uint32_t datamodel_get_process_min_thread_count(const char *name);
-void     datamodel_update_process_thread_stats(const char *name,
-                                               uint32_t thread_count,
-                                               uint32_t zombie_count,
-                                               uint32_t blocked_count);
 
 amxd_status_t dm_trigger_diagnostics(amxd_object_t *obj, amxd_function_t *fn,
                                      amxc_var_t *args, amxc_var_t *ret);

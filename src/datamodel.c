@@ -664,7 +664,10 @@ static amxd_object_t *mp_find_by_name(const char *name) {
 
 void datamodel_update_monitored_process(const char *name, const char *status,
                                         uint32_t pid, uint32_t cpu_pct,
-                                        uint32_t mem_pct) {
+                                        uint32_t mem_pct,
+                                        uint32_t thread_count,
+                                        uint32_t zombie_count,
+                                        uint32_t blocked_count) {
     if (!s_dm || !name || name[0] == '\0') return;
 
     amxd_object_t *mp_tmpl = amxd_dm_findf(s_dm, "HGWDoctor.MonitoredProcess.");
@@ -684,10 +687,13 @@ void datamodel_update_monitored_process(const char *name, const char *status,
         amxd_trans_select_object(&trans, inst);
     }
 
-    amxd_trans_set_value(cstring_t, &trans, "Status",     status ? status : "Unknown");
-    amxd_trans_set_value(uint32_t,  &trans, "PID",        pid);
-    amxd_trans_set_value(uint32_t,  &trans, "CurrentCPU", cpu_pct);
-    amxd_trans_set_value(uint32_t,  &trans, "CurrentMem", mem_pct);
+    amxd_trans_set_value(cstring_t, &trans, "Status",           status ? status : "Unknown");
+    amxd_trans_set_value(uint32_t,  &trans, "PID",              pid);
+    amxd_trans_set_value(uint32_t,  &trans, "CurrentCPU",       cpu_pct);
+    amxd_trans_set_value(uint32_t,  &trans, "CurrentMem",       mem_pct);
+    amxd_trans_set_value(uint32_t,  &trans, "ThreadCount",       thread_count);
+    amxd_trans_set_value(uint32_t,  &trans, "ZombieThreadCount", zombie_count);
+    amxd_trans_set_value(uint32_t,  &trans, "BlockedThreadCount", blocked_count);
 
     amxd_status_t st = amxd_trans_apply(&trans, s_dm);
     if (st != amxd_status_ok)
@@ -970,27 +976,6 @@ uint32_t datamodel_get_process_min_thread_count(const char *name) {
     return mp_get_uint32(name, "MinThreadCount", 1);
 }
 
-void datamodel_update_process_thread_stats(const char *name,
-                                            uint32_t thread_count,
-                                            uint32_t zombie_count,
-                                            uint32_t blocked_count) {
-    if (!s_dm || !name || name[0] == '\0') return;
-    amxd_object_t *inst = mp_find_by_name(name);
-    if (!inst) return;
-
-    amxd_trans_t trans;
-    amxd_trans_init(&trans);
-    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
-    amxd_trans_select_object(&trans, inst);
-    amxd_trans_set_value(uint32_t, &trans, "ThreadCount",        thread_count);
-    amxd_trans_set_value(uint32_t, &trans, "ZombieThreadCount",  zombie_count);
-    amxd_trans_set_value(uint32_t, &trans, "BlockedThreadCount", blocked_count);
-    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
-    if (st != amxd_status_ok)
-        syslog(LOG_WARNING, "Failed to update thread stats for '%s' (status=%d)",
-               name, st);
-    amxd_trans_clean(&trans);
-}
 
 uint32_t datamodel_get_process_cpu_threshold(const char *name) {
     DmConfig cfg;

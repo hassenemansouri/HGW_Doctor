@@ -140,47 +140,49 @@ static uint32_t proc_mem_pct(pid_t pid, uint32_t total_mem_kb) {
 /* -------------------------------------------------------------------------
  * Per-process thread stats from /proc/<pid>/status + /proc/<pid>/task/
  * ------------------------------------------------------------------------- */
-static void proc_thread_stats(pid_t pid, uint32_t *out_total,
-                               uint32_t *out_zombie, uint32_t *out_blocked) {
-    *out_total = 0; *out_zombie = 0; *out_blocked = 0;
+typedef struct {
+    uint32_t total;
+    uint32_t zombie;
+    uint32_t blocked;
+} ThreadStats;
+
+static void read_thread_stats(pid_t pid, ThreadStats *out) {
+    out->total = 0; out->zombie = 0; out->blocked = 0;
     if (pid <= 0) return;
 
-    char path[80];
+    char path[64];
     snprintf(path, sizeof(path), "/proc/%d/status", (int)pid);
     FILE *f = fopen(path, "r");
     if (f) {
         char line[128];
         while (fgets(line, sizeof(line), f)) {
-            unsigned long threads;
-            if (sscanf(line, "Threads: %lu", &threads) == 1) {
-                *out_total = (uint32_t)threads;
+            if (strncmp(line, "Threads:", 8) == 0) {
+                sscanf(line + 8, "%u", &out->total);
                 break;
             }
         }
         fclose(f);
     }
 
-    snprintf(path, sizeof(path), "/proc/%d/task", (int)pid);
-    DIR *d = opendir(path);
+    char task_path[64];
+    snprintf(task_path, sizeof(task_path), "/proc/%d/task", (int)pid);
+    DIR *d = opendir(task_path);
     if (!d) return;
 
     struct dirent *ent;
+    char line[128];
     while ((ent = readdir(d)) != NULL) {
-        pid_t tid = (pid_t)atoi(ent->d_name);
-        if (tid <= 0) continue;
-
-        char tid_path[96];
-        snprintf(tid_path, sizeof(tid_path), "/proc/%d/task/%d/status",
-                 (int)pid, (int)tid);
-        FILE *tf = fopen(tid_path, "r");
+        if (ent->d_name[0] == '.') continue;
+        char tpath[128];
+        snprintf(tpath, sizeof(tpath), "/proc/%d/task/%s/status",
+                 (int)pid, ent->d_name);
+        FILE *tf = fopen(tpath, "r");
         if (!tf) continue;
-
-        char line[128];
         while (fgets(line, sizeof(line), tf)) {
-            char state;
-            if (sscanf(line, "State: %c", &state) == 1) {
-                if (state == 'Z') (*out_zombie)++;
-                else if (state == 'D') (*out_blocked)++;
+            if (strncmp(line, "State:", 6) == 0) {
+                char state = line[7];
+                if (state == 'Z') out->zombie++;
+                if (state == 'D') out->blocked++;
                 break;
             }
         }
@@ -327,9 +329,11 @@ static void *monitor_thread(void *arg) {
             if (ps->alive && pid > 0) {
                 ps->cpu_pct = proc_cpu_pct(pi, pid);
                 ps->mem_pct = proc_mem_pct(pid, snap.sys_mem_total_kb);
-                proc_thread_stats(pid, &ps->thread_count,
-                                  &ps->zombie_thread_count,
-                                  &ps->blocked_thread_count);
+                ThreadStats ts;
+                read_thread_stats(pid, &ts);
+                ps->thread_count        = ts.total;
+                ps->zombie_thread_count = ts.zombie;
+                ps->blocked_thread_count = ts.blocked;
             } else {
                 ps->cpu_pct = 0;
                 ps->mem_pct = 0;

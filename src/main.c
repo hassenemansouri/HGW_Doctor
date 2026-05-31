@@ -50,7 +50,7 @@ static _Atomic int           g_dm_changed        = ATOMIC_VAR_INIT(0); /* set by
 static _Atomic int           g_reboot_pending    = ATOMIC_VAR_INIT(0); /* deferred reboot armed */
 static int                   s_reboot_ticks      = 0;  /* 100ms ticks until reboot; main loop only */
 
-#define ANOMALY_TYPE_COUNT 7   /* ANOMALY_NONE … ANOMALY_ON_DEMAND */
+#define ANOMALY_TYPE_COUNT 10  /* ANOMALY_NONE … ANOMALY_BLOCKED_THREAD */
 #define VERIFY_DELAY_S     30  /* seconds after recovery action to re-check metric */
 
 typedef struct {
@@ -1064,9 +1064,7 @@ int main(int argc, char *argv[]) {
                         ps->alive ? "Running" : "Dead",
                         (uint32_t)ps->pid,
                         ps->cpu_pct,
-                        ps->mem_pct);
-                    datamodel_update_process_thread_stats(
-                        ps->name,
+                        ps->mem_pct,
                         ps->thread_count,
                         ps->zombie_thread_count,
                         ps->blocked_thread_count);
