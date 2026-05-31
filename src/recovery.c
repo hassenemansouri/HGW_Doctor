@@ -232,9 +232,9 @@ static void *recovery_run(void *arg) {
                           "    }\n}\n", _pf);
                     fclose(_pf);
                     sync();
-                    syslog(LOG_NOTICE, "Pre-reboot persist written (fallback)");
+                    LOG_INFO("Pre-reboot persist written (fallback)");
                 } else {
-                    syslog(LOG_ERR, "Pre-reboot persist FAILED: %m");
+                    LOG_ERROR("Pre-reboot persist FAILED: %s", strerror(errno));
                 }
             }
             sync();
