@@ -96,18 +96,6 @@ static int sustained_dead(const int *history, int count, int required_samples) {
     return 1;
 }
 
-/* Check if every sample in the window is strictly below threshold */
-static int sustained_below(const uint32_t *history, int count,
-                            uint32_t threshold, int required_samples) {
-    if (count < required_samples) return 0;
-    int start = (s_history.idx - required_samples + HISTORY_MAX) % HISTORY_MAX;
-    for (int i = 0; i < required_samples; i++) {
-        int pos = (start + i) % HISTORY_MAX;
-        if (history[pos] >= threshold) return 0;
-    }
-    return 1;
-}
-
 /* -------------------------------------------------------------------------
  * Analyzer thread
  * ------------------------------------------------------------------------- */
