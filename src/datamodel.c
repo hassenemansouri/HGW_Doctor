@@ -91,8 +91,11 @@ static const char *anomaly_type_to_string(AnomalyType type) {
         case ANOMALY_CPU:         return "CPU";
         case ANOMALY_MEMORY:      return "Memory";
         case ANOMALY_PROCESS:     return "Process";
-        case ANOMALY_PROCESS_CPU: return "ProcessCPU";
-        case ANOMALY_PROCESS_MEM: return "ProcessMem";
+        case ANOMALY_PROCESS_CPU:    return "ProcessCPU";
+        case ANOMALY_PROCESS_MEM:    return "ProcessMem";
+        case ANOMALY_THREAD_LOW:     return "ThreadLow";
+        case ANOMALY_ZOMBIE_THREAD:  return "ZombieThread";
+        case ANOMALY_BLOCKED_THREAD: return "BlockedThread";
         case ANOMALY_ON_DEMAND:   return "OnDemand";
         case ANOMALY_NONE:
         default:                  return "";
@@ -961,6 +964,32 @@ static uint32_t mp_get_uint32(const char *name, const char *param,
     }
     amxc_var_clean(&val);
     return result;
+}
+
+uint32_t datamodel_get_process_min_thread_count(const char *name) {
+    return mp_get_uint32(name, "MinThreadCount", 1);
+}
+
+void datamodel_update_process_thread_stats(const char *name,
+                                            uint32_t thread_count,
+                                            uint32_t zombie_count,
+                                            uint32_t blocked_count) {
+    if (!s_dm || !name || name[0] == '\0') return;
+    amxd_object_t *inst = mp_find_by_name(name);
+    if (!inst) return;
+
+    amxd_trans_t trans;
+    amxd_trans_init(&trans);
+    amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
+    amxd_trans_select_object(&trans, inst);
+    amxd_trans_set_value(uint32_t, &trans, "ThreadCount",        thread_count);
+    amxd_trans_set_value(uint32_t, &trans, "ZombieThreadCount",  zombie_count);
+    amxd_trans_set_value(uint32_t, &trans, "BlockedThreadCount", blocked_count);
+    amxd_status_t st = amxd_trans_apply(&trans, s_dm);
+    if (st != amxd_status_ok)
+        syslog(LOG_WARNING, "Failed to update thread stats for '%s' (status=%d)",
+               name, st);
+    amxd_trans_clean(&trans);
 }
 
 uint32_t datamodel_get_process_cpu_threshold(const char *name) {

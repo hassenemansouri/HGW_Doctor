@@ -95,7 +95,7 @@ import "hgw_doctor.so" as "hgw_doctor";
         /* Anomaly event log — path: HGWDoctor.AnomalyLog.{i}. */
         object AnomalyLog[] {
             %read-only datetime Timestamp;
-            %read-only string AnomalyType = "";   /* "CPU" | "Memory" | "Process" */
+            %read-only string AnomalyType = "";   /* "CPU" | "Memory" | "Process" | "ProcessCPU" | "ProcessMem" | "ThreadLow" | "ZombieThread" | "BlockedThread" */
             %read-only uint32 MetricValue = 0;
             %read-only string ProcessName = "";
             %read-only string ActionTaken = "";
@@ -120,6 +120,10 @@ import "hgw_doctor.so" as "hgw_doctor";
             %persistent %read-only uint32 EscalationLevel = 0;
             %persistent %read-only uint32 EscalationCount = 0;
             %persistent %read-only string LastEscalationTime = "";
+            %read-only uint32 ThreadCount = 0;
+            %read-only uint32 ZombieThreadCount = 0;
+            %read-only uint32 BlockedThreadCount = 0;
+            %persistent uint32 MinThreadCount = 1;
         }
 
         /* RPC methods */

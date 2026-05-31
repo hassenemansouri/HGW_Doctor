@@ -32,6 +32,9 @@ typedef struct {
     bool     alive;
     uint32_t cpu_pct;
     uint32_t mem_pct;
+    uint32_t thread_count;
+    uint32_t zombie_thread_count;
+    uint32_t blocked_thread_count;
 } ProcessStat;
 
 /* -------------------------------------------------------------------------
@@ -61,9 +64,12 @@ typedef enum {
     ANOMALY_CPU         = 1,
     ANOMALY_MEMORY      = 2,
     ANOMALY_PROCESS     = 3,
-    ANOMALY_PROCESS_CPU = 4,
-    ANOMALY_PROCESS_MEM = 5,
-    ANOMALY_ON_DEMAND   = 6,  /* operator-triggered on-demand action */
+    ANOMALY_PROCESS_CPU     = 4,
+    ANOMALY_PROCESS_MEM     = 5,
+    ANOMALY_ON_DEMAND       = 6,  /* operator-triggered on-demand action */
+    ANOMALY_THREAD_LOW      = 7,
+    ANOMALY_ZOMBIE_THREAD   = 8,
+    ANOMALY_BLOCKED_THREAD  = 9,
 } AnomalyType;
 
 /* -------------------------------------------------------------------------

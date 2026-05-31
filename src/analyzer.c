@@ -41,6 +41,9 @@ static struct {
     uint32_t proc_cpu[HGW_MAX_PROC_LIST][HISTORY_MAX];
     uint32_t proc_mem[HGW_MAX_PROC_LIST][HISTORY_MAX];
     int      proc_alive[HGW_MAX_PROC_LIST][HISTORY_MAX]; /* 1=alive, 0=dead */
+    uint32_t proc_threads[HGW_MAX_PROC_LIST][HISTORY_MAX];
+    uint32_t proc_zombie[HGW_MAX_PROC_LIST][HISTORY_MAX];
+    uint32_t proc_blocked[HGW_MAX_PROC_LIST][HISTORY_MAX];
     int      idx;
     int      count;
 } s_history;
@@ -57,9 +60,12 @@ static void history_push(const MetricSnapshot *snap) {
     s_history.sys_mem[s_history.idx] = snap->sys_mem_pct;
 
     for (int i = 0; i < snap->proc_count && i < HGW_MAX_PROC_LIST; i++) {
-        s_history.proc_cpu[i][s_history.idx]   = snap->procs[i].cpu_pct;
-        s_history.proc_mem[i][s_history.idx]   = snap->procs[i].mem_pct;
-        s_history.proc_alive[i][s_history.idx] = snap->procs[i].alive ? 1 : 0;
+        s_history.proc_cpu[i][s_history.idx]     = snap->procs[i].cpu_pct;
+        s_history.proc_mem[i][s_history.idx]     = snap->procs[i].mem_pct;
+        s_history.proc_alive[i][s_history.idx]   = snap->procs[i].alive ? 1 : 0;
+        s_history.proc_threads[i][s_history.idx] = snap->procs[i].thread_count;
+        s_history.proc_zombie[i][s_history.idx]  = snap->procs[i].zombie_thread_count;
+        s_history.proc_blocked[i][s_history.idx] = snap->procs[i].blocked_thread_count;
     }
 
     s_history.idx = (s_history.idx + 1) % HISTORY_MAX;
@@ -90,6 +96,18 @@ static int sustained_dead(const int *history, int count, int required_samples) {
     return 1;
 }
 
+/* Check if every sample in the window is strictly below threshold */
+static int sustained_below(const uint32_t *history, int count,
+                            uint32_t threshold, int required_samples) {
+    if (count < required_samples) return 0;
+    int start = (s_history.idx - required_samples + HISTORY_MAX) % HISTORY_MAX;
+    for (int i = 0; i < required_samples; i++) {
+        int pos = (start + i) % HISTORY_MAX;
+        if (history[pos] >= threshold) return 0;
+    }
+    return 1;
+}
+
 /* -------------------------------------------------------------------------
  * Analyzer thread
  * ------------------------------------------------------------------------- */
@@ -110,9 +128,12 @@ static void *analyzer_thread(void *arg) {
     int have_last_seen = 0;
     int cpu_alert_active = 0;
     int mem_alert_active = 0;
-    int proc_dead_alert[HGW_MAX_PROC_LIST] = {0};
-    int proc_cpu_alert[HGW_MAX_PROC_LIST]  = {0};
-    int proc_mem_alert[HGW_MAX_PROC_LIST]  = {0};
+    int proc_dead_alert[HGW_MAX_PROC_LIST]       = {0};
+    int proc_cpu_alert[HGW_MAX_PROC_LIST]        = {0};
+    int proc_mem_alert[HGW_MAX_PROC_LIST]        = {0};
+    int proc_thread_low_alert[HGW_MAX_PROC_LIST] = {0};
+    int proc_zombie_alert[HGW_MAX_PROC_LIST]     = {0};
+    int proc_blocked_alert[HGW_MAX_PROC_LIST]    = {0};
 
     while (!atomic_load_explicit(&s_stop, memory_order_relaxed)) {
         /* Sleep half the poll interval — avoids 50 no-op wakes per sample.
@@ -143,12 +164,18 @@ static void *analyzer_thread(void *arg) {
          * data from a former process at the same slot doesn't trigger false anomalies. */
         if (atomic_load_explicit(&s_reset_proc_history, memory_order_acquire)) {
             atomic_store_explicit(&s_reset_proc_history, 0, memory_order_relaxed);
-            memset(s_history.proc_cpu,   0, sizeof(s_history.proc_cpu));
-            memset(s_history.proc_mem,   0, sizeof(s_history.proc_mem));
-            memset(s_history.proc_alive, 0, sizeof(s_history.proc_alive));
-            memset(proc_dead_alert, 0, sizeof(proc_dead_alert));
-            memset(proc_cpu_alert,  0, sizeof(proc_cpu_alert));
-            memset(proc_mem_alert,  0, sizeof(proc_mem_alert));
+            memset(s_history.proc_cpu,     0, sizeof(s_history.proc_cpu));
+            memset(s_history.proc_mem,     0, sizeof(s_history.proc_mem));
+            memset(s_history.proc_alive,   0, sizeof(s_history.proc_alive));
+            memset(s_history.proc_threads, 0, sizeof(s_history.proc_threads));
+            memset(s_history.proc_zombie,  0, sizeof(s_history.proc_zombie));
+            memset(s_history.proc_blocked, 0, sizeof(s_history.proc_blocked));
+            memset(proc_dead_alert,        0, sizeof(proc_dead_alert));
+            memset(proc_cpu_alert,         0, sizeof(proc_cpu_alert));
+            memset(proc_mem_alert,         0, sizeof(proc_mem_alert));
+            memset(proc_thread_low_alert,  0, sizeof(proc_thread_low_alert));
+            memset(proc_zombie_alert,      0, sizeof(proc_zombie_alert));
+            memset(proc_blocked_alert,     0, sizeof(proc_blocked_alert));
         }
 
         history_push(&snap);
@@ -208,8 +235,11 @@ static void *analyzer_thread(void *arg) {
                     if (s_callback) s_callback(&ev, s_userdata);
                     proc_dead_alert[i] = 1;
                 }
-                proc_cpu_alert[i] = 0;
-                proc_mem_alert[i] = 0;
+                proc_cpu_alert[i]        = 0;
+                proc_mem_alert[i]        = 0;
+                proc_thread_low_alert[i] = 0;
+                proc_zombie_alert[i]     = 0;
+                proc_blocked_alert[i]    = 0;
             } else {
                 proc_dead_alert[i] = 0;
 
@@ -251,6 +281,66 @@ static void *analyzer_thread(void *arg) {
                     }
                 } else {
                     proc_mem_alert[i] = 0;
+                }
+
+                /* Per-process thread checks */
+                uint32_t min_thr = datamodel_get_process_min_thread_count(ps->name);
+
+                /* ThreadLow: thread_count < MinThreadCount sustained */
+                if (ps->thread_count < min_thr) {
+                    if (!proc_thread_low_alert[i] &&
+                        sustained_below(s_history.proc_threads[i], s_history.count,
+                                        min_thr, required_samples)) {
+                        AnomalyEvent ev = {
+                            .type = ANOMALY_THREAD_LOW,
+                            .metric_value = ps->thread_count,
+                            .duration_s = cfg.threshold_duration_s
+                        };
+                        strncpy(ev.process_name, ps->name, HGW_MAX_PROC_NAME - 1);
+                        clock_gettime(CLOCK_REALTIME, &ev.detected_at);
+                        if (s_callback) s_callback(&ev, s_userdata);
+                        proc_thread_low_alert[i] = 1;
+                    }
+                } else {
+                    proc_thread_low_alert[i] = 0;
+                }
+
+                /* ZombieThread: zombie_thread_count >= 1 sustained */
+                if (ps->zombie_thread_count > 0) {
+                    if (!proc_zombie_alert[i] &&
+                        sustained_threshold(s_history.proc_zombie[i], s_history.count,
+                                            1, required_samples)) {
+                        AnomalyEvent ev = {
+                            .type = ANOMALY_ZOMBIE_THREAD,
+                            .metric_value = ps->zombie_thread_count,
+                            .duration_s = cfg.threshold_duration_s
+                        };
+                        strncpy(ev.process_name, ps->name, HGW_MAX_PROC_NAME - 1);
+                        clock_gettime(CLOCK_REALTIME, &ev.detected_at);
+                        if (s_callback) s_callback(&ev, s_userdata);
+                        proc_zombie_alert[i] = 1;
+                    }
+                } else {
+                    proc_zombie_alert[i] = 0;
+                }
+
+                /* BlockedThread: blocked_thread_count >= 1 sustained */
+                if (ps->blocked_thread_count > 0) {
+                    if (!proc_blocked_alert[i] &&
+                        sustained_threshold(s_history.proc_blocked[i], s_history.count,
+                                            1, required_samples)) {
+                        AnomalyEvent ev = {
+                            .type = ANOMALY_BLOCKED_THREAD,
+                            .metric_value = ps->blocked_thread_count,
+                            .duration_s = cfg.threshold_duration_s
+                        };
+                        strncpy(ev.process_name, ps->name, HGW_MAX_PROC_NAME - 1);
+                        clock_gettime(CLOCK_REALTIME, &ev.detected_at);
+                        if (s_callback) s_callback(&ev, s_userdata);
+                        proc_blocked_alert[i] = 1;
+                    }
+                } else {
+                    proc_blocked_alert[i] = 0;
                 }
             }
         }

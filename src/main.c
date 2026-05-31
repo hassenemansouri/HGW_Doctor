@@ -1065,6 +1065,11 @@ int main(int argc, char *argv[]) {
                         (uint32_t)ps->pid,
                         ps->cpu_pct,
                         ps->mem_pct);
+                    datamodel_update_process_thread_stats(
+                        ps->name,
+                        ps->thread_count,
+                        ps->zombie_thread_count,
+                        ps->blocked_thread_count);
                 }
             }
             datamodel_update_uptime((uint32_t)(time(NULL) - start_time));
