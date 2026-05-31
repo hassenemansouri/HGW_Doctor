@@ -283,14 +283,11 @@ static void *analyzer_thread(void *arg) {
                     proc_mem_alert[i] = 0;
                 }
 
-                /* Per-process thread checks */
+                /* Per-process thread checks — fire on first sample, no sustained window */
                 uint32_t min_thr = datamodel_get_process_min_thread_count(ps->name);
 
-                /* ThreadLow: thread_count < MinThreadCount sustained */
-                if (ps->thread_count < min_thr) {
-                    if (!proc_thread_low_alert[i] &&
-                        sustained_below(s_history.proc_threads[i], s_history.count,
-                                        min_thr, required_samples)) {
+                if (ps->thread_count > 0 && ps->thread_count < min_thr) {
+                    if (!proc_thread_low_alert[i]) {
                         AnomalyEvent ev = {
                             .type = ANOMALY_THREAD_LOW,
                             .metric_value = ps->thread_count,
@@ -305,11 +302,8 @@ static void *analyzer_thread(void *arg) {
                     proc_thread_low_alert[i] = 0;
                 }
 
-                /* ZombieThread: zombie_thread_count >= 1 sustained */
                 if (ps->zombie_thread_count > 0) {
-                    if (!proc_zombie_alert[i] &&
-                        sustained_threshold(s_history.proc_zombie[i], s_history.count,
-                                            1, required_samples)) {
+                    if (!proc_zombie_alert[i]) {
                         AnomalyEvent ev = {
                             .type = ANOMALY_ZOMBIE_THREAD,
                             .metric_value = ps->zombie_thread_count,
@@ -324,11 +318,8 @@ static void *analyzer_thread(void *arg) {
                     proc_zombie_alert[i] = 0;
                 }
 
-                /* BlockedThread: blocked_thread_count >= 1 sustained */
                 if (ps->blocked_thread_count > 0) {
-                    if (!proc_blocked_alert[i] &&
-                        sustained_threshold(s_history.proc_blocked[i], s_history.count,
-                                            1, required_samples)) {
+                    if (!proc_blocked_alert[i]) {
                         AnomalyEvent ev = {
                             .type = ANOMALY_BLOCKED_THREAD,
                             .metric_value = ps->blocked_thread_count,
