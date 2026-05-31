@@ -1,0 +1,5 @@
+%populate {
+    object HGWDoctor {
+        parameter PendingReboot = false;
+    }
+}

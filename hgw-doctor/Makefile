@@ -84,6 +84,8 @@ define Package/hgw-doctor/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/odl/hgw_doctor_caps.odl         $(1)/etc/amx/hgw_doctor/
 	# Separate directory for Ambiorix persistent-param save files (must not contain default ODLs)
 	$(INSTALL_DIR) $(1)/etc/amx/hgw_doctor/persist
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/hgw-doctor/files/hgw_doctor_persist.odl \
+		$(1)/etc/amx/hgw_doctor/persist/hgw_doctor.odl
 
 	# Recovery action scripts
 	$(INSTALL_DIR) $(1)/usr/lib/hgw_doctor/actions
