@@ -670,22 +670,13 @@ void datamodel_update_monitored_process(const char *name, const char *status,
                                         uint32_t blocked_count) {
     if (!s_dm || !name || name[0] == '\0') return;
 
-    amxd_object_t *mp_tmpl = amxd_dm_findf(s_dm, "HGWDoctor.MonitoredProcess.");
-    if (!mp_tmpl) return;
-
     amxd_object_t *inst = mp_find_by_name(name);
+    if (!inst) return;  /* instance must be created by datamodel_sync_monitored_processes */
 
     amxd_trans_t trans;
     amxd_trans_init(&trans);
     amxd_trans_set_attr(&trans, amxd_tattr_change_ro, true);
-
-    if (!inst) {
-        amxd_trans_select_object(&trans, mp_tmpl);
-        amxd_trans_add_inst(&trans, 0, NULL);
-        amxd_trans_set_value(cstring_t, &trans, "Name", name);
-    } else {
-        amxd_trans_select_object(&trans, inst);
-    }
+    amxd_trans_select_object(&trans, inst);
 
     amxd_trans_set_value(cstring_t, &trans, "Status",           status ? status : "Unknown");
     amxd_trans_set_value(uint32_t,  &trans, "PID",              pid);
