@@ -107,6 +107,10 @@ define Package/hgw-doctor/install
 	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/acl/admin/hgw-doctor.json $(1)/etc/acl/admin/hgw-doctor.json
 	$(INSTALL_DIR) $(1)/etc/acl/operator
 	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/acl/operator/hgw-doctor.json $(1)/etc/acl/operator/hgw-doctor.json
+
+	# Web dashboard served by lighttpd at /hgw-doctor.html
+	$(INSTALL_DIR) $(1)/www
+	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/www/hgw-doctor.html $(1)/www/hgw-doctor.html
 endef
 
 $(eval $(call BuildPackage,hgw-doctor))
