@@ -1,0 +1,34 @@
+{
+    "Device.X_TELNET_HGWDoctor.": {
+        "Order": 1,
+        "Param": "rwxn",
+        "Obj": "rwxn",
+        "InstantiatedObj": "rwxn"
+    },
+    "Device.X_TELNET_HGWDoctor.MonitoredProcess.": {
+        "Order": 2,
+        "Param": "rwxn",
+        "Obj": "rwxn",
+        "InstantiatedObj": "rwxn"
+    },
+    "Device.X_TELNET_HGWDoctor.AnomalyLog.": {
+        "Order": 2,
+        "Param": "rwxn",
+        "Obj": "rwxn",
+        "InstantiatedObj": "rwxn"
+    },
+    "Device.X_TELNET_HGWDoctor.Stats.": {
+        "Order": 2,
+        "Param": "rwxn"
+    },
+    "Device.X_TELNET_HGWDoctor.SelfStats.": {
+        "Order": 2,
+        "Param": "rwxn"
+    },
+    "Device.X_TELNET_HGWDoctor.Profiles.": {
+        "Order": 2,
+        "Param": "rwxn",
+        "Obj": "rwxn",
+        "InstantiatedObj": "rwxn"
+    }
+}

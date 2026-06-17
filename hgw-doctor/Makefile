@@ -101,6 +101,12 @@ define Package/hgw-doctor/install
 	# procd init scripts
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/hgw-doctor.init $(1)/etc/init.d/hgw-doctor
+
+	# ACL files for amx-fcgi HTTP API access
+	$(INSTALL_DIR) $(1)/etc/acl/admin
+	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/acl/admin/hgw-doctor.json $(1)/etc/acl/admin/hgw-doctor.json
+	$(INSTALL_DIR) $(1)/etc/acl/operator
+	$(INSTALL_DATA) $(TOPDIR)/feeds/hgw_doctor/hgw-doctor/files/acl/operator/hgw-doctor.json $(1)/etc/acl/operator/hgw-doctor.json
 endef
 
 $(eval $(call BuildPackage,hgw-doctor))
