@@ -130,21 +130,28 @@ static bool fetch_config_from_bus(DmConfig *out) {
     } \
 } while(0)
 
-    READ_U32("CPUThreshold",      cpu_threshold_pct);
-    READ_U32("MemThreshold",      mem_threshold_pct);
-    READ_U32("ThresholdDuration", threshold_duration_s);
-    READ_U32("PollInterval",      poll_interval_s);
-    READ_STR("ActionType",        action_type);
-    READ_STR("ProcessList",       process_list);
-    READ_STR("UploadURL",         upload_url);
-    READ_STR("DiagOutputDir",     diag_output_dir);
-    READ_STR("OnDemandTarget",    on_demand_target);
+#define READ_BOOL(param, field) do { \
+    if (amxd_object_get_param(obj, param, &val) == amxd_status_ok) \
+        out->field = amxc_var_dyncast(bool, &val); \
+} while(0)
+
+    READ_U32("CPUThreshold",           cpu_threshold_pct);
+    READ_U32("MemThreshold",           mem_threshold_pct);
+    READ_U32("ThresholdDuration",      threshold_duration_s);
+    READ_U32("PollInterval",           poll_interval_s);
+    READ_U32("EscalationResetMinutes", escalation_reset_minutes);
+    READ_STR("ActionType",             action_type);
+    READ_STR("ProcessList",            process_list);
+    READ_STR("UploadURL",              upload_url);
+    READ_STR("DiagOutputDir",          diag_output_dir);
+    READ_STR("OnDemandTarget",         on_demand_target);
+    READ_STR("SystemAnomalyAction",    system_anomaly_action);
+    READ_BOOL("Enable",                enable);
+    READ_BOOL("EscalationEnabled",     escalation_enabled);
 
 #undef READ_U32
 #undef READ_STR
-
-    if (amxd_object_get_param(obj, "Enable", &val) == amxd_status_ok)
-        out->enable = amxc_var_dyncast(bool, &val);
+#undef READ_BOOL
 
     amxc_var_clean(&val);
     return out->poll_interval_s > 0;
@@ -199,15 +206,18 @@ static const char *action_type_to_string(ActionType action) {
 }
 
 static bool dmconfig_changed(const DmConfig *a, const DmConfig *b) {
-    return a->cpu_threshold_pct    != b->cpu_threshold_pct    ||
-           a->mem_threshold_pct    != b->mem_threshold_pct    ||
-           a->threshold_duration_s != b->threshold_duration_s ||
-           a->poll_interval_s      != b->poll_interval_s      ||
-           a->enable               != b->enable               ||
-           strncmp(a->action_type,      b->action_type,      sizeof(a->action_type))      != 0 ||
-           strncmp(a->process_list,     b->process_list,     sizeof(a->process_list))     != 0 ||
-           strncmp(a->upload_url,       b->upload_url,       sizeof(a->upload_url))       != 0 ||
-           strncmp(a->diag_output_dir,  b->diag_output_dir,  sizeof(a->diag_output_dir))  != 0;
+    return a->cpu_threshold_pct        != b->cpu_threshold_pct        ||
+           a->mem_threshold_pct        != b->mem_threshold_pct        ||
+           a->threshold_duration_s     != b->threshold_duration_s     ||
+           a->poll_interval_s          != b->poll_interval_s          ||
+           a->enable                   != b->enable                   ||
+           a->escalation_enabled       != b->escalation_enabled       ||
+           a->escalation_reset_minutes != b->escalation_reset_minutes ||
+           strncmp(a->action_type,           b->action_type,           sizeof(a->action_type))           != 0 ||
+           strncmp(a->process_list,          b->process_list,          sizeof(a->process_list))          != 0 ||
+           strncmp(a->upload_url,            b->upload_url,            sizeof(a->upload_url))            != 0 ||
+           strncmp(a->diag_output_dir,       b->diag_output_dir,       sizeof(a->diag_output_dir))       != 0 ||
+           strncmp(a->system_anomaly_action, b->system_anomaly_action, sizeof(a->system_anomaly_action)) != 0;
 }
 
 /* forward declaration — defined after on_recovery_done */
@@ -358,8 +368,9 @@ static void apply_dm_config(const DmConfig *dmc) {
     rcfg2.process_count            = proc_count;
     memcpy(rcfg2.process_names, proc_names, sizeof(rcfg2.process_names));
     strncpy(rcfg2.scripts_dir, s_scripts_dir, HGW_MAX_PATH - 1);
-    rcfg2.escalation_enabled       = datamodel_get_escalation_enabled();
-    rcfg2.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
+    rcfg2.escalation_enabled       = effective.escalation_enabled;
+    rcfg2.escalation_reset_minutes = effective.escalation_reset_minutes;
+    rcfg2.system_anomaly_action    = action_str_to_type(effective.system_anomaly_action);
     rcfg2.allow_reboot             = s_allow_reboot;
     recovery_update_config(&rcfg2);
 
@@ -714,6 +725,11 @@ int main(int argc, char *argv[]) {
     rcfg.escalation_enabled       = datamodel_get_escalation_enabled();
     rcfg.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
     rcfg.allow_reboot             = s_allow_reboot;
+    {
+        char _saa[32] = {0};
+        datamodel_get_system_anomaly_action(_saa, sizeof(_saa));
+        rcfg.system_anomaly_action = action_str_to_type(_saa);
+    }
     recovery_init(&rcfg, on_recovery_done, NULL);
 
     /* If we booted after a HGWDoctor-triggered reboot, record it in the
@@ -798,6 +814,11 @@ int main(int argc, char *argv[]) {
             rcfg_hup.escalation_enabled       = datamodel_get_escalation_enabled();
             rcfg_hup.escalation_reset_minutes = datamodel_get_escalation_reset_minutes();
             rcfg_hup.allow_reboot             = cur->allow_reboot;
+            {
+                char _saa[32] = {0};
+                datamodel_get_system_anomaly_action(_saa, sizeof(_saa));
+                rcfg_hup.system_anomaly_action = action_str_to_type(_saa);
+            }
             recovery_update_config(&rcfg_hup);
 
             if (cur->diag_output_dir[0] != '\0')

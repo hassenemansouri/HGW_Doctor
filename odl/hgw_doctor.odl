@@ -42,9 +42,11 @@ import "hgw_doctor.so" as "hgw_doctor";
          * Writing a non-None value triggers an immediate on-demand action
          * and resets ActionType back to "None" automatically. */
         %persistent string ActionType = "None";
+        %persistent string SystemAnomalyAction = "CacheClear";
         %persistent bool EscalationEnabled = false;
         %persistent uint32 EscalationResetMinutes = 60;
         %persistent string ProcessList = "";
+        
         %persistent string OnDemandTarget = "";  /* specific target for on-demand ProcessRestart */
         %persistent uint32 RebootDelaySec = 10;
         %persistent %read-only uint32 RebootCount = 0;

@@ -12,6 +12,7 @@ typedef struct {
     bool       escalation_enabled;
     uint32_t   escalation_reset_minutes;
     bool       allow_reboot;
+    ActionType system_anomaly_action;
 } RecoveryConfig;
 
 typedef void (*recovery_callback)(const RecoveryResult *result, void *userdata);

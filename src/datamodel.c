@@ -228,6 +228,33 @@ static bool dm_read_bool(const char *param_path) {
     return result;
 }
 
+static void dm_read_string(const char *param_path, char *buf, size_t len) {
+    char object_path[HGW_MAX_PATH];
+    char param_name[HGW_MAX_PROC_NAME];
+    amxc_var_t val;
+
+    if (!s_dm || !buf || len == 0) return;
+    buf[0] = '\0';
+    if (dm_split_path(param_path, object_path, sizeof(object_path),
+                      param_name, sizeof(param_name)) != 0)
+        return;
+
+    size_t obj_len = strlen(object_path);
+    if (obj_len > 0 && object_path[obj_len - 1] != '.' && obj_len + 1 < HGW_MAX_PATH) {
+        object_path[obj_len]     = '.';
+        object_path[obj_len + 1] = '\0';
+    }
+
+    amxd_object_t *obj = amxd_dm_findf(s_dm, "%s", object_path);
+    if (!obj) return;
+    amxc_var_init(&val);
+    if (amxd_object_get_param(obj, param_name, &val) == amxd_status_ok) {
+        const char *s = amxc_var_constcast(cstring_t, &val);
+        if (s) { strncpy(buf, s, len - 1); buf[len - 1] = '\0'; }
+    }
+    amxc_var_clean(&val);
+}
+
 static void dm_set_datetime_now(const char *param_path) {
     char buf[32];
     time_t now = time(NULL);
@@ -1021,30 +1048,37 @@ bool datamodel_get_config(DmConfig *out) {
     } \
 } while (0)
 
-    DM_READ_U32(TR181_CPU_THRESHOLD,      out->cpu_threshold_pct);
-    DM_READ_U32(TR181_MEM_THRESHOLD,      out->mem_threshold_pct);
-    DM_READ_U32(TR181_THRESHOLD_DURATION, out->threshold_duration_s);
-    DM_READ_U32(TR181_POLL_INTERVAL,      out->poll_interval_s);
-    DM_READ_STR(TR181_ACTION_TYPE,        out->action_type,      sizeof(out->action_type));
-    DM_READ_STR(TR181_PROCESS_LIST,       out->process_list,     sizeof(out->process_list));
-    DM_READ_STR(TR181_UPLOAD_URL,         out->upload_url,       sizeof(out->upload_url));
-    DM_READ_STR(TR181_DIAG_OUTPUT_DIR,    out->diag_output_dir,  sizeof(out->diag_output_dir));
+#define DM_READ_BOOL(path, field) do { \
+    if (dm_split_path((path), object_path, sizeof(object_path), \
+                      param_name, sizeof(param_name)) == 0) { \
+        size_t _ol = strlen(object_path); \
+        if (_ol > 0 && object_path[_ol-1] != '.' && _ol+1 < HGW_MAX_PATH) \
+            { object_path[_ol] = '.'; object_path[_ol+1] = '\0'; } \
+        obj = amxd_dm_findf(s_dm, "%s", object_path); \
+        if (obj && amxd_object_get_param(obj, param_name, &val) == amxd_status_ok) \
+            (field) = amxc_var_dyncast(bool, &val); \
+    } \
+} while (0)
 
-    /* Enable */
-    if (dm_split_path(TR181_ENABLE, object_path, sizeof(object_path),
-                      param_name, sizeof(param_name)) == 0) {
-        size_t _ol = strlen(object_path);
-        if (_ol > 0 && object_path[_ol-1] != '.' && _ol+1 < HGW_MAX_PATH)
-            { object_path[_ol] = '.'; object_path[_ol+1] = '\0'; }
-        obj = amxd_dm_findf(s_dm, "%s", object_path);
-        if (obj && amxd_object_get_param(obj, param_name, &val) == amxd_status_ok)
-            out->enable = amxc_var_dyncast(bool, &val);
-        else
-            out->enable = true;
-    }
+    DM_READ_U32(TR181_CPU_THRESHOLD,          out->cpu_threshold_pct);
+    DM_READ_U32(TR181_MEM_THRESHOLD,          out->mem_threshold_pct);
+    DM_READ_U32(TR181_THRESHOLD_DURATION,     out->threshold_duration_s);
+    DM_READ_U32(TR181_POLL_INTERVAL,          out->poll_interval_s);
+    DM_READ_U32(TR181_ESCALATION_RESET_MINS,  out->escalation_reset_minutes);
+    DM_READ_STR(TR181_ACTION_TYPE,            out->action_type,            sizeof(out->action_type));
+    DM_READ_STR(TR181_PROCESS_LIST,           out->process_list,           sizeof(out->process_list));
+    DM_READ_STR(TR181_UPLOAD_URL,             out->upload_url,             sizeof(out->upload_url));
+    DM_READ_STR(TR181_DIAG_OUTPUT_DIR,        out->diag_output_dir,        sizeof(out->diag_output_dir));
+    DM_READ_STR(TR181_SYSTEM_ANOMALY_ACTION,  out->system_anomaly_action,  sizeof(out->system_anomaly_action));
+
+    /* Enable defaults to true if unreadable; EscalationEnabled defaults to false */
+    out->enable = true;
+    DM_READ_BOOL(TR181_ENABLE,               out->enable);
+    DM_READ_BOOL(TR181_ESCALATION_ENABLED,   out->escalation_enabled);
 
 #undef DM_READ_U32
 #undef DM_READ_STR
+#undef DM_READ_BOOL
     amxc_var_clean(&val);
     return true;
 }
@@ -1054,6 +1088,17 @@ bool datamodel_get_config(DmConfig *out) {
  * ------------------------------------------------------------------------- */
 void datamodel_set_action_type(const char *action_type) {
     dm_set_string(TR181_ACTION_TYPE, action_type ? action_type : "None");
+}
+
+void datamodel_get_system_anomaly_action(char *buf, size_t len) {
+    if (!buf || len == 0) return;
+    dm_read_string(TR181_SYSTEM_ANOMALY_ACTION, buf, len);
+    if (buf[0] == '\0')
+        strncpy(buf, ACTSTR_CACHE_CLEAR, len - 1);
+}
+
+void datamodel_set_system_anomaly_action(const char *action) {
+    dm_set_string(TR181_SYSTEM_ANOMALY_ACTION, action ? action : ACTSTR_CACHE_CLEAR);
 }
 
 uint32_t datamodel_get_reboot_delay_sec(void) {

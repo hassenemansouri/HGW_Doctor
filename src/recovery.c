@@ -190,8 +190,8 @@ static void *recovery_run(void *arg) {
                event->type == ANOMALY_PROCESS_MEM) {
         action = ACTION_PROCESS_RESTART;
     } else if (event->type == ANOMALY_CPU || event->type == ANOMALY_MEMORY) {
-        action = (task->cfg.action_type == ACTION_PROCESS_RESTART)
-               ? ACTION_CACHE_CLEAR : task->cfg.action_type;
+        ActionType sys_act = task->cfg.system_anomaly_action;
+        action = (sys_act == ACTION_PROCESS_RESTART) ? ACTION_CACHE_CLEAR : sys_act;
     } else {
         action = task->cfg.action_type;
     }
@@ -486,10 +486,12 @@ void recovery_update_config(const RecoveryConfig *cfg) {
     s_cfg.escalation_enabled      = cfg->escalation_enabled;
     s_cfg.escalation_reset_minutes = cfg->escalation_reset_minutes;
     s_cfg.allow_reboot            = cfg->allow_reboot;
+    s_cfg.system_anomaly_action   = cfg->system_anomaly_action;
     /* scripts_dir is host-side config, not exposed via DM — leave unchanged */
     pthread_mutex_unlock(&s_cfg_mutex);
-    LOG_INFO("Recovery config updated: action=%d processes=%d escalation=%d",
-             cfg->action_type, cfg->process_count, cfg->escalation_enabled);
+    LOG_INFO("Recovery config updated: action=%d processes=%d escalation=%d sys_action=%d",
+             cfg->action_type, cfg->process_count, cfg->escalation_enabled,
+             cfg->system_anomaly_action);
 }
 
 void recovery_cleanup(void) {

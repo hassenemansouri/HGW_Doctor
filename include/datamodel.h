@@ -26,6 +26,9 @@ typedef struct {
     char     diag_output_dir[HGW_MAX_PATH];
     char     on_demand_target[HGW_MAX_PROC_NAME];
     bool     enable;
+    bool     escalation_enabled;
+    uint32_t escalation_reset_minutes;
+    char     system_anomaly_action[32];
 } DmConfig;
 
 int datamodel_init(amxd_dm_t *dm, amxo_parser_t *parser, const char *odl_path);
@@ -35,6 +38,8 @@ void datamodel_start_sync(void);  /* call after amxb_register() to activate amxs
 void datamodel_set_status(const char *status_str);
 void datamodel_set_action_type(const char *action_type);
 void datamodel_set_process_list(const char *process_list);
+void datamodel_get_system_anomaly_action(char *buf, size_t len);
+void datamodel_set_system_anomaly_action(const char *action);
 void datamodel_update_stats(uint32_t cpu_pct, uint32_t mem_pct,
                             uint32_t mem_free_kb);
 void datamodel_record_action(const RecoveryResult *result);

@@ -76,6 +76,7 @@
 /* ── Escalation config (HGWDoctor object) ────────────────────────────────── */
 #define TR181_ESCALATION_ENABLED      TR181_ROOT ".EscalationEnabled"
 #define TR181_ESCALATION_RESET_MINS   TR181_ROOT ".EscalationResetMinutes"
+#define TR181_SYSTEM_ANOMALY_ACTION   TR181_ROOT ".SystemAnomalyAction"
 
 /* ── String values for ActionType parameter ─────────────────────────────── */
 #define ACTSTR_NONE               "None"
